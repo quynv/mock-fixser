@@ -2,7 +2,9 @@
 
 A simulated FIX 4.4 server written in Go. It streams prices for configured symbols, accepts orders and answers with ExecutionReports according to predefined rules. See [the design document](./docs/Design%20Document.md) for the full specification.
 
-Status: phase 5 (Web UI). Everything of phases 1–4 plus the Web UI at `http://localhost:8080/`, embedded in the binary.
+Status: phase 6 done (faults, flow control, load test, limit/stop orders, FIX 4.2 and 5.0 SP2, TLS). The Web UI runs at `http://localhost:8080/`, embedded in the binary.
+
+![Symbols screen: live candles, runtime commands and the symbol editor](docs/screenshots/symbols.png)
 
 ## Requirements
 
@@ -201,6 +203,14 @@ Edits only change a draft; nothing reaches the server until **Apply**. The draft
 - **Order rules**: drag to reorder priorities, conditions as chips, action chains as timelines with total latency, `default_action`, list rules, and a rule tester that runs a sample order against the draft.
 - **FIX log**: the U1 mirror (turned on while the screen is open), filters by session, direction and MsgType, search, pause, and a tag-by-tag view with field and enum names.
 - **YAML**: the draft in Monaco, a diff against the running config, and version history with rollback.
+
+| Dashboard | Order rules |
+| --- | --- |
+| ![Dashboard](docs/screenshots/dashboard.png) | ![Order rules](docs/screenshots/rules.png) |
+| **Orders** | **Sessions** |
+| ![Orders](docs/screenshots/orders.png) | ![Sessions](docs/screenshots/sessions.png) |
+| **FIX log** | **YAML** |
+| ![FIX log](docs/screenshots/fix-log.png) | ![YAML](docs/screenshots/yaml.png) |
 
 ## Session faults
 
