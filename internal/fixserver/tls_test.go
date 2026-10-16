@@ -35,7 +35,7 @@ symbols: []
 	return cfg
 }
 
-// dialTLS connects like the postprime gateways: SocketUseSSL with a client
+// dialTLS connects like a typical LP client: SocketUseSSL with a client
 // certificate and no server verification.
 func dialTLS(t *testing.T, port int, certs string, clientCert bool) *testClient {
 	t.Helper()

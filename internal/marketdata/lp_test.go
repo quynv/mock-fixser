@@ -17,7 +17,7 @@ import (
 	"log/slog"
 )
 
-// bidOnlyFullRefresh is the request of the postprime price-gateway: only
+// bidOnlyFullRefresh is a client request for bids only:
 // MDEntryType 0, MDUpdateType 0 (full refresh), MarketDepth 0.
 func bidOnlyFullRefresh(id, symbol string) marketdatarequest.MarketDataRequest {
 	m := marketdatarequest.New(field.NewMDReqID(id), field.NewSubscriptionRequestType(enum.SubscriptionRequestType_SNAPSHOTUPDATE), field.NewMarketDepth(0))

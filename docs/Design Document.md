@@ -276,7 +276,7 @@ MarketDepth=1 sends top of book only; any other value sends up to the configured
 
 Two options reproduce LP behavior that clients depend on:
 
-- `market_data.send_both_sides` (global, overridable per session) sends bid and offer entries whatever MDEntryTypes the request lists. oneZero does this, and the postprime price-gateway requests only 0 (bid) but drops any snapshot without both sides.
+- `market_data.send_both_sides` (global, overridable per session) sends bid and offer entries whatever MDEntryTypes the request lists. Some LPs (oneZero) do this, and some clients request only 0 (bid) but drop any snapshot without both sides.
 - `quote_condition` per symbol is sent as QuoteCondition (276) on every bid and offer entry, e.g. A (open, tradable) or B (closed). Without it, tag 276 is not sent.
 
 ### 6.4 Publisher
@@ -784,21 +784,7 @@ Estimates assume one Go engineer familiar with FIX; phase 5 can run in parallel 
 | QuoteCancel (Z) | Runtime command | Tests clients' resubscribe handling (section 6.5) |
 | Symbol names for a client | Kept in sync by the developer | mockfix does not read client product lists |
 
-### 14.3 Compatibility with the postprime-sec gateways
-
-mockfix is used as the LP (oneZero) for `order-gateway` and `price-gateway` of postprime-sec. What they rely on, and how mockfix covers it:
-
-| Client behavior | mockfix |
-| --- | --- |
-| quickfixgo initiator, FIX 4.4, TLS with a client certificate and no server verification | `server.fix.tls` with client\_auth none or request |
-| Separate sessions: PostPrimeTaker\_T ↔ TakaTradeUAT\_T (orders), PostPrimeTaker\_Q ↔ TakaTradeUAT\_Q (prices); ResetOnLogon/ResetOnLogout, Logon with ResetSeqNumFlag=Y and Password | Configured CompIDs; quickfixgo resets sequences; the password is not checked |
-| order-gateway: D Market, HandlInst=1, TimeInForce=FOK, 2-decimal OrderQty; waits up to 5 s for a final ExecutionReport (OrdStatus 2, 8, 4 or C) and reads LastPx, OrdRejReason, Text | Accepted; rules decide fill, reject, cancel or no answer (to test the 5 s timeout) |
-| price-gateway: one V per ticker, SubscriptionRequestType=1, MarketDepth=0, MDUpdateType=0, MDEntryType 0 only | W on every tick (full refresh) |
-| price-gateway drops W without both a bid and an offer, and treats a price as tradable only with 276=A on every entry | `send_both_sides: true` on the price session and `quote_condition: A` on the symbols |
-| price-gateway resubscribes after QuoteCancel type 4 (all quotes); type 1 is only logged | quote\_cancel runtime command |
-| Product tickers (e.g. XAUUSD, XAGUSD, XPTUSD, XPDUSD, CrudeOil) | Symbols in the mock config, kept in sync by the developer |
-
-An end-to-end test (`internal/app/postprime_test.go`) drives mockfix with clients configured like both gateways.
+An end-to-end test (`internal/app/lp_client_test.go`) drives mockfix with a client that uses TLS with a client certificate, requests only bids but needs both sides with 276=A, resubscribes after QuoteCancel, and sends Market FOK orders.
 
 ## 15. Persistence with a WAL (phase 7)
 

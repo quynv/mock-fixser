@@ -23,15 +23,15 @@ import (
 	"github.com/quynv/mock-fixser/internal/tlsgen"
 )
 
-// gatewayClient behaves like the postprime-sec order-gateway and
-// price-gateway: TLS with a client certificate and no server check, reset
+// lpClient behaves like a typical LP client of mockfix:
+// TLS with a client certificate and no server check, reset
 // on logon and logout, ResetSeqNumFlag and Password on Logon, and no data
 // dictionary.
-type gatewayClient struct {
+type lpClient struct {
 	*client
 }
 
-func (c *gatewayClient) ToAdmin(m *quickfix.Message, _ quickfix.SessionID) {
+func (c *lpClient) ToAdmin(m *quickfix.Message, _ quickfix.SessionID) {
 	if mt, _ := m.MsgType(); mt == "A" {
 		m.Body.SetField(tag.EncryptMethod, quickfix.FIXString("0"))
 		m.Body.SetField(tag.ResetSeqNumFlag, quickfix.FIXBoolean(true))
@@ -39,7 +39,7 @@ func (c *gatewayClient) ToAdmin(m *quickfix.Message, _ quickfix.SessionID) {
 	}
 }
 
-func dialGateway(t *testing.T, port int, certs, sender, target string) *gatewayClient {
+func dialLPClient(t *testing.T, port int, certs, sender, target string) *lpClient {
 	t.Helper()
 	settings := quickfix.NewSettings()
 	g := settings.GlobalSettings()
@@ -60,7 +60,7 @@ func dialGateway(t *testing.T, port int, certs, sender, target string) *gatewayC
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := &gatewayClient{client: &client{id: id, logon: make(chan struct{}, 4), msgs: make(chan *quickfix.Message, 10000)}}
+	c := &lpClient{client: &client{id: id, logon: make(chan struct{}, 4), msgs: make(chan *quickfix.Message, 10000)}}
 	ini, err := quickfix.NewInitiator(c, quickfix.NewMemoryStoreFactory(), settings, quickfix.NewNullLogFactory())
 	if err != nil {
 		t.Fatal(err)
@@ -77,8 +77,8 @@ func dialGateway(t *testing.T, port int, certs, sender, target string) *gatewayC
 	return c
 }
 
-// subscribe sends the price-gateway's queryMarketDataRequest44.
-func (c *gatewayClient) subscribe(t *testing.T, mdReqID, symbol string) {
+// subscribe asks for bids only, full refresh, full depth.
+func (c *lpClient) subscribe(t *testing.T, mdReqID, symbol string) {
 	t.Helper()
 	m := marketdatarequest.New(field.NewMDReqID(mdReqID),
 		field.NewSubscriptionRequestType(enum.SubscriptionRequestType_SNAPSHOTUPDATE), field.NewMarketDepth(0))
@@ -94,7 +94,7 @@ func (c *gatewayClient) subscribe(t *testing.T, mdReqID, symbol string) {
 	}
 }
 
-// acceptable applies the price-gateway's checks to a W: at least two
+// acceptable applies the client's checks to a W: at least two
 // entries, a bid and an offer, and QuoteCondition A on every entry.
 func acceptable(t *testing.T, m *quickfix.Message) (tradable bool, reason string) {
 	t.Helper()
@@ -121,7 +121,7 @@ func acceptable(t *testing.T, m *quickfix.Message) (tradable bool, reason string
 	return tradable, ""
 }
 
-func TestPostprimeGatewayCompatibility(t *testing.T) {
+func TestLPClientCompatibility(t *testing.T) {
 	certs := t.TempDir()
 	if err := tlsgen.Generate(certs, []string{"127.0.0.1"}, time.Hour); err != nil {
 		t.Fatal(err)
@@ -134,9 +134,9 @@ func TestPostprimeGatewayCompatibility(t *testing.T) {
     data_dictionary: %s
     tls: { cert_file: %s, key_file: %s, client_auth: request }
     sessions:
-      - { sender_comp_id: TakaTradeUAT_T, target_comp_id: PostPrimeTaker_T }
-      - sender_comp_id: TakaTradeUAT_Q
-        target_comp_id: PostPrimeTaker_Q
+      - { sender_comp_id: MOCKSRV_T, target_comp_id: CLIENT_T }
+      - sender_comp_id: MOCKSRV_Q
+        target_comp_id: CLIENT_Q
         market_data: { send_both_sides: true }
   monitor: { enabled: false }
 symbols:
@@ -156,13 +156,13 @@ default_action: [ { type: ack }, { type: fill } ]
 	go func() { done <- a.Run(ctx) }()
 	t.Cleanup(func() { cancel(); <-done })
 
-	// price-gateway
-	q := dialGateway(t, port, certs, "PostPrimeTaker_Q", "TakaTradeUAT_Q")
+	// price session
+	q := dialLPClient(t, port, certs, "CLIENT_Q", "MOCKSRV_Q")
 	q.subscribe(t, "md-1", "XAUUSD")
 	for range 3 { // the snapshot and two ticks, all W (full refresh)
 		w := q.waitFor(t, "W", "md-1")
 		if ok, why := acceptable(t, w); !ok {
-			t.Fatalf("price-gateway would drop or mark non-tradable: %q in %s", why, w)
+			t.Fatalf("client would drop or mark non-tradable: %q in %s", why, w)
 		}
 	}
 
@@ -178,8 +178,8 @@ default_action: [ { type: ack }, { type: fill } ]
 	q.subscribe(t, "md-2", "XAUUSD")
 	q.waitFor(t, "W", "md-2")
 
-	// order-gateway: Market FOK with HandlInst 1 and a 2-decimal quantity.
-	o := dialGateway(t, port, certs, "PostPrimeTaker_T", "TakaTradeUAT_T")
+	// order session: Market FOK with HandlInst 1 and a 2-decimal quantity.
+	o := dialLPClient(t, port, certs, "CLIENT_T", "MOCKSRV_T")
 	d := newordersingle.New(field.NewClOrdID("0b6d8a52-2f9e-7d3c-9b1a-1c2d3e4f5a6b"), field.NewSide(enum.Side_BUY),
 		field.NewTransactTime(time.Now()), field.NewOrdType(enum.OrdType_MARKET))
 	d.SetHandlInst("1")
@@ -194,14 +194,14 @@ default_action: [ { type: ack }, { type: fill } ]
 		er := o.waitFor(t, "8", "")
 		status, _ := er.Body.GetString(tag.OrdStatus)
 		if status != "2" && status != "8" && status != "4" && status != "C" {
-			continue // the gateway ignores intermediate reports
+			continue // the client ignores intermediate reports
 		}
 		lastPx, err := er.Body.GetString(tag.LastPx)
 		if status != "2" || err != nil || lastPx == "" {
 			t.Fatalf("final report OrdStatus %s LastPx %q: %s", status, lastPx, er)
 		}
 		if time.Since(start) > 5*time.Second {
-			t.Fatal("slower than the gateway's 5 s timeout")
+			t.Fatal("slower than the client's 5 s timeout")
 		}
 		break
 	}
