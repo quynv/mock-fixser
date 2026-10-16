@@ -60,7 +60,9 @@ func (b *outbox) run() {
 			}
 			for _, m := range q {
 				if err := b.send(m, b.id); err != nil {
-					b.log.Warn("order message not sent", "session", b.id.String(), "error", err)
+					// Nothing queues for an offline session (e.g. a drop copy
+					// while the monitor is away).
+					b.log.Debug("order message not sent", "session", b.id.String(), "error", err)
 				}
 			}
 		}

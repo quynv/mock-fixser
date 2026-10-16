@@ -46,6 +46,7 @@ type Server struct {
 	// Session faults of the running config, and their state per logon.
 	faults      atomic.Pointer[map[quickfix.SessionID]*config.SessionFaults]
 	faultStates map[quickfix.SessionID]*faultState
+	flows       map[quickfix.SessionID]*flow
 }
 
 // New builds the acceptors from cfg. Call Start to open the listeners.
@@ -60,13 +61,14 @@ func New(cfg *config.Config, log *slog.Logger) (*Server, error) {
 		stores:      newStoreCache(quickfix.NewMemoryStoreFactory()),
 		conns:       map[quickfix.SessionID]net.Conn{},
 		faultStates: map[quickfix.SessionID]*faultState{},
+		flows:       map[quickfix.SessionID]*flow{},
 	}
 	s.setAllowed(cfg.Server.FIX.Sessions)
 
 	s.SetTap(nil)
 	s.app.checkLogon = s.checkLogon
 	s.app.onLogon = append(s.app.onLogon, s.startFaults)
-	s.app.onLogout = append(s.app.onLogout, s.stopFaults)
+	s.app.onLogout = append(s.app.onLogout, s.stopFaults, func(id quickfix.SessionID) { s.flowFor(id).reset() })
 	logs := slogLogFactory{log: log, tap: &s.tap}
 	cs, err := clientSettings(cfg.Server.FIX)
 	if err != nil {
@@ -91,6 +93,14 @@ func New(cfg *config.Config, log *slog.Logger) (*Server, error) {
 			s.unregisterStatic()
 			return nil, err
 		}
+		// The monitor session needs the write reports for flow control too.
+		s.monitor.SetNewListenerCallback(newFaultListener)
+		s.monitor.SetConnectionValidator(validatorFunc(func(c net.Conn, id quickfix.SessionID) error {
+			if fc, ok := c.(*faultConn); ok {
+				fc.flow.Store(s.flowFor(id))
+			}
+			return nil
+		}))
 		for id := range ms.SessionSettings() {
 			s.static = append(s.static, id)
 		}
@@ -260,6 +270,9 @@ func (s *Server) validate(conn net.Conn, id quickfix.SessionID) error {
 	// A second connection for a logged-on session is refused by quickfixgo
 	// later; keep the live connection on record.
 	if !s.app.loggedOn(id) {
+		if fc, ok := conn.(*faultConn); ok {
+			fc.flow.Store(s.flowFor(id))
+		}
 		s.mu.Lock()
 		s.conns[id] = conn
 		s.mu.Unlock()

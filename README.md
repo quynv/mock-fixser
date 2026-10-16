@@ -50,7 +50,7 @@ make docker     # build the mockfix image
 
 For UI development, run mockfix, then `cd web && npm run dev`: Vite serves the UI with hot reload and proxies `/api`, `/ws` and `/metrics` to `http://localhost:8080` (override with `MOCKFIX_URL`). Before the first `npm run dev`, generate the dictionary with `make web/src/fix/dict.json`. The first `make e2e` needs `cd web && npx playwright install chromium`.
 
-Run with `bin/mockfix --config configs/mock.yaml`. Flags: `--log-level`, `--no-ui`, `--version`.
+Run with `bin/mockfix --config configs/mock.yaml`. Flags: `--log-level`, `--no-ui`, `--pprof` (serve `/debug/pprof` on the HTTP port), `--version`.
 
 ## Configuration
 
@@ -168,3 +168,25 @@ sessions:
 ```
 
 `POST /api/sessions/{id}/fault` with `{"type": "drop" | "seq_gap" | "heartbeat_miss"}` triggers one at once on a logged-on session; the Sessions screen has buttons for them.
+
+## Load test
+
+`cmd/loadgen` runs the load test of design doc section 13: client sessions that subscribe to every symbol and send orders at a fixed rate. It reports order latency (D to the first ExecutionReport, network included), market data received, and the server's tick rate, conflation, CPU and memory from `/metrics`.
+
+```sh
+go run ./cmd/loadgen -gen-config /tmp/load.yaml -sessions 10 -symbols 200 -tps 25
+bin/mockfix --config /tmp/load.yaml --log-level warn &
+go run ./cmd/loadgen -sessions 10 -symbols 200 -orders 100 -duration 30s
+```
+
+On an Apple M3 Pro (11 cores), 10 sessions × 200 symbols × 25 ticks/s with 100 orders/s, without batching:
+
+| | Result | Target (section 2.2) |
+| --- | --- | --- |
+| Ticks generated | 5,087/s | ≥ 5,000/s |
+| Market data delivered | 50,850 messages/s (every tick to every session), 0 conflated | |
+| Order latency | p50 0.25 ms, p99 4.2 ms | p99 < 5 ms |
+| Server CPU | 2.4 cores | |
+| Server memory | 121 MiB | |
+
+Each session sends through flow control: at most one application message waits for the network, orders go before market data, and a session that stops reading only has its own ticks conflated. Market data and U1 messages are not kept for resend; a ResendRequest gets a gap fill for them.

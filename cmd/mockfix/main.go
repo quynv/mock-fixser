@@ -23,6 +23,7 @@ func main() {
 	logLevel := flag.String("log-level", "info", "log level: debug, info, warn, error")
 	noUI := flag.Bool("no-ui", false, "skip the HTTP server and the FIX gateway (for CI)")
 	showVersion := flag.Bool("version", false, "print the version and exit")
+	pprof := flag.Bool("pprof", false, "serve /debug/pprof on the HTTP server")
 	flag.Parse()
 
 	if *showVersion {
@@ -41,7 +42,7 @@ func main() {
 	defer stop()
 
 	slog.Info("mockfix starting", "version", version, "config", *configPath, "no_ui", *noUI)
-	if err := run(ctx, *configPath, *noUI); err != nil {
+	if err := run(ctx, *configPath, app.Options{NoUI: *noUI, Pprof: *pprof}); err != nil {
 		var verr *config.ValidationError
 		if errors.As(err, &verr) {
 			fmt.Fprintln(os.Stderr, err)
@@ -53,8 +54,8 @@ func main() {
 	slog.Info("mockfix stopped")
 }
 
-func run(ctx context.Context, configPath string, noUI bool) error {
-	a, err := app.New(configPath, slog.Default(), app.Options{NoUI: noUI})
+func run(ctx context.Context, configPath string, opts app.Options) error {
+	a, err := app.New(configPath, slog.Default(), opts)
 	if err != nil {
 		return err
 	}

@@ -28,6 +28,8 @@ import (
 type Options struct {
 	// NoUI skips the HTTP server and the FIX gateway (for CI).
 	NoUI bool
+	// Pprof serves /debug/pprof on the HTTP server.
+	Pprof bool
 }
 
 type App struct {
@@ -63,13 +65,14 @@ func New(configPath string, log *slog.Logger, opts Options) (*App, error) {
 		a.srv.Stop()
 		return nil, err
 	}
-	a.pub = marketdata.NewPublisher(a.engine, cfg, clk, log, nil)
+	// Sends go through the server's flow control (orders first).
+	a.pub = marketdata.NewPublisher(a.engine, cfg, clk, log, a.srv.SendMarketData)
 	a.sched = sched.New(clk)
-	if a.orders, err = order.NewEngine(cfg, a.engine, a.sched, log, nil); err != nil {
+	if a.orders, err = order.NewEngine(cfg, a.engine, a.sched, log, a.srv.SendOrder); err != nil {
 		a.srv.Stop()
 		return nil, err
 	}
-	a.mirror = monitor.New(cfg, clk, log, nil)
+	a.mirror = monitor.New(cfg, clk, log, a.srv.SendMarketData)
 	if !opts.NoUI && cfg.Server.Monitor.Enabled {
 		if a.gw, err = gateway.New(cfg, log); err != nil {
 			a.srv.Stop()
@@ -143,7 +146,7 @@ func (a *App) Run(ctx context.Context) error {
 		}
 		addr := ln.Addr().String()
 		a.httpAddr.Store(&addr)
-		deps := admin.Deps{Store: a.store, Market: a.engine, Orders: a.orders, Server: a.srv, UI: web.FS(), Log: a.log}
+		deps := admin.Deps{Store: a.store, Market: a.engine, Orders: a.orders, Server: a.srv, UI: web.FS(), Pprof: a.opts.Pprof, Log: a.log}
 		if a.gw != nil {
 			deps.WS = a.gw
 		}

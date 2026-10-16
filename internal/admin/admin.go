@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"net/http/pprof"
 	"slices"
 	"strconv"
 	"strings"
@@ -36,8 +37,10 @@ type Deps struct {
 	// WS serves /ws (the FIX gateway hub); nil disables it.
 	WS http.Handler
 	// UI holds the built Web UI served at /; nil disables it.
-	UI  fs.FS
-	Log *slog.Logger
+	UI fs.FS
+	// Pprof serves net/http/pprof under /debug/pprof/.
+	Pprof bool
+	Log   *slog.Logger
 }
 
 type api struct{ Deps }
@@ -84,6 +87,11 @@ func Handler(d Deps) http.Handler {
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "no such endpoint", nil)
 	})
+	if d.Pprof {
+		mux.HandleFunc("/debug/pprof/", pprof.Index)
+		mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+		mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+	}
 	if d.UI != nil {
 		// No method in the pattern: "GET /" would conflict with "/api/".
 		mux.Handle("/", spa(d.UI))

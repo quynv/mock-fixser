@@ -99,7 +99,21 @@ func (l *lockedStore) SetCreationTime(t time.Time) {
 	l.s.SetCreationTime(t)
 }
 
+// Market data and mirror messages are not kept for resend: at thousands
+// per second they would grow the memory store without bound, and a resent
+// stale price is useless. quickfixgo gap-fills the missing numbers.
+func transient(msg []byte) bool {
+	switch MsgType(msg) {
+	case "W", "X", "U1":
+		return true
+	}
+	return false
+}
+
 func (l *lockedStore) SaveMessage(seqNum int, msg []byte) error {
+	if transient(msg) {
+		return nil
+	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.s.SaveMessage(seqNum, msg)
@@ -108,6 +122,9 @@ func (l *lockedStore) SaveMessage(seqNum int, msg []byte) error {
 func (l *lockedStore) SaveMessageAndIncrNextSenderMsgSeqNum(seqNum int, msg []byte) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if transient(msg) {
+		return l.s.IncrNextSenderMsgSeqNum()
+	}
 	return l.s.SaveMessageAndIncrNextSenderMsgSeqNum(seqNum, msg)
 }
 

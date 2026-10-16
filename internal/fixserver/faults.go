@@ -52,11 +52,13 @@ func newFaultListener(address string, tlsConfig *tls.Config) (net.Listener, erro
 	return faultListener{l}, nil
 }
 
-// faultConn drops outgoing heartbeats while dropHeartbeats is set.
-// quickfixgo writes one whole message per Write call.
+// faultConn drops outgoing heartbeats while dropHeartbeats is set, and
+// reports completed writes to the session's flow control. quickfixgo
+// writes one whole message per Write call.
 type faultConn struct {
 	net.Conn
 	dropHeartbeats atomic.Bool
+	flow           atomic.Pointer[flow]
 }
 
 var heartbeatTag = []byte("\x0135=0\x01")
@@ -65,7 +67,11 @@ func (c *faultConn) Write(b []byte) (int, error) {
 	if c.dropHeartbeats.Load() && bytes.Contains(b, heartbeatTag) {
 		return len(b), nil
 	}
-	return c.Conn.Write(b)
+	n, err := c.Conn.Write(b)
+	if f := c.flow.Load(); f != nil {
+		f.written(b)
+	}
+	return n, err
 }
 
 // faultState is the running fault simulation of one logged-on session.
