@@ -41,16 +41,24 @@ type sentMsg struct {
 	msg     *quickfix.Message
 }
 
-// capture records sent messages, optionally blocking on gate first.
+// capture records sent messages, optionally blocking on gate first (and
+// saying so on blocked).
 type capture struct {
-	out  chan sentMsg
-	gate chan struct{}
+	out     chan sentMsg
+	gate    chan struct{}
+	blocked chan struct{}
 }
 
 func newCapture() *capture { return &capture{out: make(chan sentMsg, 1000)} }
 
 func (c *capture) send(m *quickfix.Message, _ quickfix.SessionID) error {
 	if c.gate != nil {
+		if c.blocked != nil {
+			select {
+			case c.blocked <- struct{}{}:
+			default:
+			}
+		}
 		<-c.gate
 	}
 	// Round-trip through the wire format, as a client would see it.
@@ -245,7 +253,9 @@ func TestSlowSessionIsConflated(t *testing.T) {
 	src := fakeSource{"AAPL": quote("AAPL", 230, 1)}
 	p, c := newPub(t, src, noBatching)
 	c.gate = make(chan struct{})
+	c.blocked = make(chan struct{}, 1)
 	handle(t, p, request("r1", enum.SubscriptionRequestType_SNAPSHOTUPDATE, 1, "AAPL"))
+	<-c.blocked // the writer is stuck sending W
 
 	// The writer is stuck sending W; OnQuote must not block meanwhile.
 	done := make(chan struct{})
