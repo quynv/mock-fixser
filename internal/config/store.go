@@ -18,6 +18,8 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 	"gopkg.in/yaml.v3"
+
+	"github.com/quynv/mock-fixser/internal/metrics"
 )
 
 // ErrVersionConflict is returned by Apply when IfVersion does not match the
@@ -114,6 +116,7 @@ func Open(path string, opts Options) (*Store, error) {
 		cfg.Version = versions[n-1] + 1
 	}
 	s.cur.Store(&state{cfg: cfg, raw: raw})
+	metrics.ConfigVersion.Set(float64(cfg.Version))
 	return s, nil
 }
 
@@ -148,6 +151,7 @@ func (s *Store) applyLocked(data []byte, o ApplyOptions) (*Result, error) {
 
 	cfg, err := ParseWith(data, s.opts.Validators...)
 	if err != nil {
+		metrics.ConfigReloadError.Inc()
 		s.log.Warn("config rejected", "source", o.Source, "error", err)
 		return nil, err
 	}
@@ -173,6 +177,7 @@ func (s *Store) applyLocked(data []byte, o ApplyOptions) (*Result, error) {
 	}
 
 	s.cur.Store(&state{cfg: cfg, raw: raw})
+	metrics.ConfigVersion.Set(float64(cfg.Version))
 	s.log.Info("config applied", "version", cfg.Version, "source", o.Source,
 		"sections", diff.Sections, "restart_required", diff.RestartRequired)
 
@@ -181,6 +186,28 @@ func (s *Store) applyLocked(data []byte, o ApplyOptions) (*Result, error) {
 		fn(ch)
 	}
 	return &Result{Version: cfg.Version, Diff: diff}, nil
+}
+
+// Update applies an edit of the running YAML under the store lock, so the
+// read-modify-write cannot interleave with other changes. The admin API's
+// partial edits (symbols, rules) use it (section 10).
+func (s *Store) Update(edit func(raw []byte) ([]byte, error), o ApplyOptions) (*Result, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cur := s.cur.Load()
+	if o.IfVersion != 0 && o.IfVersion != cur.cfg.Version {
+		return nil, fmt.Errorf("%w: running version is %d, not %d", ErrVersionConflict, cur.cfg.Version, o.IfVersion)
+	}
+	data, err := edit(bytes.Clone(cur.raw))
+	if err != nil {
+		return nil, err
+	}
+	return s.applyLocked(data, o)
+}
+
+// Validate parses data with the store's validators without applying it.
+func (s *Store) Validate(data []byte) (*Config, error) {
+	return ParseWith(data, s.opts.Validators...)
 }
 
 // HistoryEntry is one saved version.

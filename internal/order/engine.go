@@ -16,6 +16,7 @@ import (
 	"github.com/quynv/mock-fixser/fix/tag"
 	"github.com/quynv/mock-fixser/internal/config"
 	"github.com/quynv/mock-fixser/internal/marketdata"
+	"github.com/quynv/mock-fixser/internal/metrics"
 	"github.com/quynv/mock-fixser/internal/sched"
 )
 
@@ -78,16 +79,20 @@ func (e *Engine) SetConfig(cfg *config.Config) error {
 	return nil
 }
 
-// Route registers the order handlers on a router.
+// Route registers the order handlers on a router. Each handler's time is
+// observed in mockfix_order_latency_seconds.
 func (e *Engine) Route(r *quickfix.MessageRouter) {
-	r.AddRoute(quickfix.BeginStringFIX44, "D", e.handleNew)
-	r.AddRoute(quickfix.BeginStringFIX44, "F", e.handleCancel)
-	r.AddRoute(quickfix.BeginStringFIX44, "G", e.handleReplace)
-	r.AddRoute(quickfix.BeginStringFIX44, "H", e.handleStatus)
-	r.AddRoute(quickfix.BeginStringFIX44, "E", e.handleNewList)
-	r.AddRoute(quickfix.BeginStringFIX44, "K", e.handleListCancel)
-	r.AddRoute(quickfix.BeginStringFIX44, "M", e.handleListStatusRequest)
-	r.AddRoute(quickfix.BeginStringFIX44, "q", e.handleMassCancel)
+	for msgType, h := range map[string]quickfix.MessageRoute{
+		"D": e.handleNew, "F": e.handleCancel, "G": e.handleReplace, "H": e.handleStatus,
+		"E": e.handleNewList, "K": e.handleListCancel, "M": e.handleListStatusRequest, "q": e.handleMassCancel,
+	} {
+		obs := metrics.OrderLatency.WithLabelValues(msgType)
+		r.AddRoute(quickfix.BeginStringFIX44, msgType, func(m *quickfix.Message, id quickfix.SessionID) quickfix.MessageRejectError {
+			start := time.Now()
+			defer func() { obs.Observe(time.Since(start).Seconds()) }()
+			return h(m, id)
+		})
+	}
 }
 
 // Close stops the session outboxes.
@@ -290,6 +295,7 @@ func (e *Engine) runStep(o *Order, gen uint64, st Step, piece int) {
 	case "business_reject":
 		// The order is treated as never accepted.
 		o.chain++
+		countOrder(o, "business_reject")
 		e.book.remove(o)
 		e.outboxLocked(o.Session).push(businessReject("D", o.ClOrdID, st.Reason, st.Text))
 	}

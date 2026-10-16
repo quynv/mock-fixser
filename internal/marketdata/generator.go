@@ -111,6 +111,15 @@ func (g *Generator) Tick(now time.Time) Quote {
 	return g.quote(g.mid, now)
 }
 
+// Force sets the mid (rounded to the tick size) and returns a new quote
+// stamped now. Replay models keep reading their file afterwards.
+func (g *Generator) Force(mid float64, now time.Time) Quote {
+	g.mid = roundTick(mid, g.cfg.TickSize)
+	g.seq++
+	g.last = now
+	return g.quote(g.mid, now)
+}
+
 // quote derives bid/ask from mid: bid = mid − spread/2 rounded down to a
 // tick, ask = bid + spread, so the spread stays exact.
 func (g *Generator) quote(mid float64, now time.Time) Quote {

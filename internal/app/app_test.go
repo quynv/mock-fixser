@@ -175,7 +175,7 @@ func (c *client) waitFor(t *testing.T, msgType, mdReqID string) *quickfix.Messag
 
 func startApp(t *testing.T, path string) {
 	t.Helper()
-	a, err := New(path, slog.New(slog.DiscardHandler))
+	a, err := New(path, slog.New(slog.DiscardHandler), Options{NoUI: true})
 	if err != nil {
 		t.Fatal(err)
 	}

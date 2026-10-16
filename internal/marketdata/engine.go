@@ -3,6 +3,7 @@ package marketdata
 import (
 	"container/heap"
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"reflect"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/quynv/mock-fixser/internal/clock"
 	"github.com/quynv/mock-fixser/internal/config"
+	"github.com/quynv/mock-fixser/internal/metrics"
 )
 
 // maxLag is how far a symbol may fall behind before its schedule jumps to
@@ -32,11 +34,12 @@ type Engine struct {
 }
 
 type symState struct {
-	cfg   config.Symbol
-	gen   *Generator
-	last  Quote
-	next  time.Time
-	index int
+	cfg    config.Symbol
+	gen    *Generator
+	last   Quote
+	next   time.Time
+	index  int
+	paused bool // runtime command, kept across config changes
 }
 
 func NewEngine(symbols []config.Symbol, clk clock.Clock, log *slog.Logger, sink func(Quote)) (*Engine, error) {
@@ -145,6 +148,7 @@ func (e *Engine) Run(ctx context.Context) error {
 		case <-e.wake:
 		}
 		for _, q := range e.tickDue() {
+			metrics.Ticks.WithLabelValues(q.Symbol).Inc()
 			e.sink(q)
 		}
 	}
@@ -168,9 +172,11 @@ func (e *Engine) tickDue() []Quote {
 	var out []Quote
 	for len(e.heap) > 0 && !e.heap[0].next.After(now) {
 		st := e.heap[0]
-		q := st.gen.Tick(st.next)
-		st.last = q
-		out = append(out, q)
+		if !st.paused {
+			q := st.gen.Tick(st.next)
+			st.last = q
+			out = append(out, q)
+		}
 		st.next = st.next.Add(st.gen.Interval())
 		if now.Sub(st.next) > maxLag {
 			st.next = now.Add(st.gen.Interval())
@@ -198,4 +204,93 @@ func (h *symHeap) Pop() any {
 	st := old[len(old)-1]
 	*h = old[:len(old)-1]
 	return st
+}
+
+// ErrUnknownSymbol is returned by runtime commands for a symbol that is not
+// configured.
+var ErrUnknownSymbol = errors.New("unknown symbol")
+
+// SymbolState is the runtime view of a symbol for the admin API.
+type SymbolState struct {
+	Symbol string  `json:"symbol"`
+	Paused bool    `json:"paused"`
+	Bid    float64 `json:"bid"`
+	Ask    float64 `json:"ask"`
+	Mid    float64 `json:"mid"`
+	Seq    uint64  `json:"seq"`
+}
+
+// State returns the runtime state of a symbol.
+func (e *Engine) State(symbol string) (SymbolState, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	st, ok := e.syms[symbol]
+	if !ok {
+		return SymbolState{}, ErrUnknownSymbol
+	}
+	return SymbolState{Symbol: symbol, Paused: st.paused, Bid: st.last.Bid, Ask: st.last.Ask, Mid: st.last.Mid, Seq: st.last.Seq}, nil
+}
+
+// Pause stops a symbol's ticks until Resume. Runtime commands are not
+// written to the YAML (section 6.5).
+func (e *Engine) Pause(symbol string) error { return e.setPaused(symbol, true) }
+
+// Resume restarts a paused symbol.
+func (e *Engine) Resume(symbol string) error { return e.setPaused(symbol, false) }
+
+func (e *Engine) setPaused(symbol string, paused bool) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	st, ok := e.syms[symbol]
+	if !ok {
+		return ErrUnknownSymbol
+	}
+	st.paused = paused
+	return nil
+}
+
+// SetPrice forces the mid to a level within [min, max] and publishes the
+// new quote at once; the model continues from there.
+func (e *Engine) SetPrice(symbol string, mid float64) error {
+	return e.force(symbol, func(st *symState) (float64, error) {
+		if mid < st.cfg.Min || mid > st.cfg.Max {
+			return 0, fmt.Errorf("price %v outside [min, max] = [%v, %v]", mid, st.cfg.Min, st.cfg.Max)
+		}
+		return mid, nil
+	})
+}
+
+// Spike moves the mid by percent up or down (clamped to [min, max]) and
+// publishes the new quote at once; the model continues from there.
+func (e *Engine) Spike(symbol string, percent float64, up bool) error {
+	return e.force(symbol, func(st *symState) (float64, error) {
+		if percent <= 0 {
+			return 0, errors.New("percent must be positive")
+		}
+		f := 1 + percent/100
+		if !up {
+			f = 1 - percent/100
+		}
+		return min(max(st.last.Mid*f, st.cfg.Min), st.cfg.Max), nil
+	})
+}
+
+func (e *Engine) force(symbol string, target func(*symState) (float64, error)) error {
+	e.mu.Lock()
+	st, ok := e.syms[symbol]
+	if !ok {
+		e.mu.Unlock()
+		return ErrUnknownSymbol
+	}
+	mid, err := target(st)
+	if err != nil {
+		e.mu.Unlock()
+		return err
+	}
+	q := st.gen.Force(mid, e.clock.Now())
+	st.last = q
+	e.mu.Unlock()
+	metrics.Ticks.WithLabelValues(q.Symbol).Inc()
+	e.sink(q)
+	return nil
 }

@@ -123,3 +123,45 @@ func TestEngineJumpsAheadWhenLagging(t *testing.T) {
 		t.Fatalf("caught up with %d ticks, want a bounded catch-up", n)
 	}
 }
+
+func TestRuntimeCommands(t *testing.T) {
+	e, clk, log := startEngine(t, []config.Symbol{sym("A", config.Speed{IntervalMs: 100})})
+	if err := e.Pause("A"); err != nil {
+		t.Fatal(err)
+	}
+	step(clk, 500*time.Millisecond, 10*time.Millisecond)
+	if n := log.count("A"); n != 0 {
+		t.Fatalf("%d ticks while paused", n)
+	}
+	if err := e.SetPrice("A", 105); err != nil {
+		t.Fatal(err)
+	}
+	if s, _ := e.State("A"); s.Mid != 105 || s.Bid != 104.99 || !s.Paused || log.count("A") != 1 {
+		t.Fatalf("after set_price: %+v, %d quotes", s, log.count("A"))
+	}
+	if err := e.Spike("A", 10, false); err != nil {
+		t.Fatal(err)
+	}
+	if s, _ := e.State("A"); s.Mid != 94.5 {
+		t.Fatalf("after spike down 10%%: mid %v", s.Mid)
+	}
+	if err := e.Spike("A", 50, true); err != nil {
+		t.Fatal(err)
+	}
+	if s, _ := e.State("A"); s.Mid != 110 {
+		t.Fatalf("spike clamped to max: mid %v", s.Mid)
+	}
+	if err := e.SetPrice("A", 500); err == nil {
+		t.Fatal("price outside [min, max] accepted")
+	}
+	if err := e.Resume("A"); err != nil {
+		t.Fatal(err)
+	}
+	step(clk, 300*time.Millisecond, 10*time.Millisecond)
+	if n := log.count("A"); n != 6 {
+		t.Fatalf("quotes = %d, want 3 forced + 3 ticks", n)
+	}
+	if err := e.Pause("NOPE"); err != ErrUnknownSymbol {
+		t.Fatalf("Pause(NOPE) = %v", err)
+	}
+}

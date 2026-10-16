@@ -1,13 +1,28 @@
 package order
 
 import (
+	"strings"
 	"time"
 
 	"github.com/quickfixgo/quickfix"
 	"github.com/shopspring/decimal"
 
 	"github.com/quynv/mock-fixser/fix/enum"
+	"github.com/quynv/mock-fixser/internal/metrics"
 )
+
+var statusNames = map[enum.OrdStatus]string{
+	enum.OrdStatus_FILLED: "filled", enum.OrdStatus_CANCELED: "canceled",
+	enum.OrdStatus_REJECTED: "rejected", enum.OrdStatus_EXPIRED: "expired",
+}
+
+func countOrder(o *Order, result string) {
+	rule := o.Rule
+	if rule == "" {
+		rule = "precheck"
+	}
+	metrics.Orders.WithLabelValues(o.Session.String(), rule, result).Inc()
+}
 
 // DefaultRetention is how many closed orders are kept for H and lookups
 // (section 7.5).
@@ -131,8 +146,10 @@ func (b *book) remove(o *Order) {
 	delete(b.orders, o.OrderID)
 }
 
-// closed records a closed order and evicts the oldest beyond retention.
+// markClosed records a closed order, counts it in mockfix_orders_total and
+// evicts the oldest closed orders beyond retention.
 func (b *book) markClosed(o *Order) {
+	countOrder(o, strings.ToLower(statusNames[o.Status]))
 	b.closed = append(b.closed, o.OrderID)
 	for len(b.closed) > b.retention {
 		if old, ok := b.orders[b.closed[0]]; ok {

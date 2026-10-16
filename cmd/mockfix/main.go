@@ -41,7 +41,7 @@ func main() {
 	defer stop()
 
 	slog.Info("mockfix starting", "version", version, "config", *configPath, "no_ui", *noUI)
-	if err := run(ctx, *configPath); err != nil {
+	if err := run(ctx, *configPath, *noUI); err != nil {
 		var verr *config.ValidationError
 		if errors.As(err, &verr) {
 			fmt.Fprintln(os.Stderr, err)
@@ -53,8 +53,8 @@ func main() {
 	slog.Info("mockfix stopped")
 }
 
-func run(ctx context.Context, configPath string) error {
-	a, err := app.New(configPath, slog.Default())
+func run(ctx context.Context, configPath string, noUI bool) error {
+	a, err := app.New(configPath, slog.Default(), app.Options{NoUI: noUI})
 	if err != nil {
 		return err
 	}

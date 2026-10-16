@@ -6,11 +6,13 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/quickfixgo/quickfix"
 
 	"github.com/quynv/mock-fixser/fix/enum"
 	"github.com/quynv/mock-fixser/internal/clock"
 	"github.com/quynv/mock-fixser/internal/config"
+	"github.com/quynv/mock-fixser/internal/metrics"
 )
 
 // maxPending bounds the tick queue of a session when ticks are not
@@ -47,6 +49,8 @@ type writer struct {
 	batching func() config.Batching
 
 	conflated atomic.Uint64
+	dropped   prometheus.Counter  // mockfix_md_conflated_total for this session
+	batchSize prometheus.Observer // mockfix_md_batch_size for this session
 
 	mu        sync.Mutex
 	fifo      []*quickfix.Message
@@ -62,10 +66,12 @@ type writer struct {
 func newWriter(id quickfix.SessionID, send Sender, clk clock.Clock, log *slog.Logger, batching func() config.Batching) *writer {
 	w := &writer{
 		id: id, send: send, clock: clk, log: log, batching: batching,
-		slots:  map[slotKey]int{},
-		signal: make(chan struct{}, 1),
-		stop:   make(chan struct{}),
-		done:   make(chan struct{}),
+		slots:     map[slotKey]int{},
+		dropped:   metrics.MDConflated.WithLabelValues(id.String()),
+		batchSize: metrics.MDBatchSize.WithLabelValues(id.String()),
+		signal:    make(chan struct{}, 1),
+		stop:      make(chan struct{}),
+		done:      make(chan struct{}),
 	}
 	go w.run()
 	return w
@@ -106,6 +112,7 @@ func (w *writer) enqueueTick(t pendingTick) {
 		}
 		w.ticks[idx] = t
 		w.conflated.Add(1)
+		w.dropped.Inc()
 	} else {
 		if len(w.ticks) == 0 {
 			w.firstTick = w.clock.Now()
@@ -113,6 +120,7 @@ func (w *writer) enqueueTick(t pendingTick) {
 		if len(w.ticks) >= maxPending {
 			w.ticks = w.ticks[1:]
 			w.conflated.Add(1)
+			w.dropped.Inc()
 			w.reindexLocked()
 		}
 		w.slots[key] = len(w.ticks)
@@ -232,6 +240,7 @@ func (w *writer) sendBatches(mdReqID string, ticks []pendingTick, b config.Batch
 	entries := 0
 	flush := func() {
 		if len(items) > 0 {
+			w.batchSize.Observe(float64(len(symbols)))
 			w.sendOne(incrementalMsg(mdReqID, items))
 		}
 		items, entries = nil, 0

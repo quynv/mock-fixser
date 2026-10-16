@@ -5,6 +5,8 @@ import (
 	"sync"
 
 	"github.com/quickfixgo/quickfix"
+
+	"github.com/quynv/mock-fixser/internal/metrics"
 )
 
 // App is the quickfix.Application shared by both acceptors. Application
@@ -34,6 +36,7 @@ func (a *App) OnCreate(quickfix.SessionID) {}
 func (a *App) OnLogon(id quickfix.SessionID) {
 	a.mu.Lock()
 	a.logged[id] = true
+	metrics.SessionsLoggedOn.Set(float64(len(a.logged)))
 	a.mu.Unlock()
 	a.log.Info("session logon", "session", id.String())
 }
@@ -41,6 +44,7 @@ func (a *App) OnLogon(id quickfix.SessionID) {
 func (a *App) OnLogout(id quickfix.SessionID) {
 	a.mu.Lock()
 	delete(a.logged, id)
+	metrics.SessionsLoggedOn.Set(float64(len(a.logged)))
 	hooks := a.onLogout
 	a.mu.Unlock()
 	a.log.Info("session logout", "session", id.String())

@@ -12,6 +12,7 @@ import (
 	"github.com/quynv/mock-fixser/fix/fix44/marketdatarequest"
 	"github.com/quynv/mock-fixser/internal/clock"
 	"github.com/quynv/mock-fixser/internal/config"
+	"github.com/quynv/mock-fixser/internal/metrics"
 )
 
 // QuoteSource is the part of the Engine the publisher needs.
@@ -76,6 +77,12 @@ func (p *Publisher) SetConfig(cfg *config.Config) {
 			s.sessions[cs.Key()] = mergeBatching(s.global, *cs.MarketData.Batching)
 		}
 	}
+	// The UI gateway subscribes per symbol and is never batched, so the
+	// chart does not depend on other clients' settings (section 6.6).
+	mon := cfg.Server.Monitor
+	noBatch := s.global
+	noBatch.Enabled = false
+	s.sessions[config.SessionKey{SenderCompID: mon.SenderCompID, TargetCompID: mon.TargetCompID}] = noBatch
 	p.batching.Store(s)
 }
 
@@ -253,6 +260,7 @@ func (p *Publisher) HandleRequest(m marketdatarequest.MarketDataRequest, id quic
 			p.bySymbol[sym] = map[*subscription]struct{}{}
 		}
 		p.bySymbol[sym][sub] = struct{}{}
+		metrics.MDSubscriptions.WithLabelValues(sym).Inc()
 	}
 	return nil
 }
@@ -270,8 +278,11 @@ func (p *Publisher) sessionLocked(id quickfix.SessionID) *sessionState {
 }
 
 func (p *Publisher) unregisterLocked(sub *subscription) {
-	sub.active.Store(false)
+	if !sub.active.Swap(false) {
+		return
+	}
 	for _, sym := range sub.symbols {
+		metrics.MDSubscriptions.WithLabelValues(sym).Dec()
 		delete(p.bySymbol[sym], sub)
 		if len(p.bySymbol[sym]) == 0 {
 			delete(p.bySymbol, sym)

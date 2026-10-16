@@ -30,12 +30,18 @@ type Server struct {
 
 	client  *quickfix.Acceptor
 	monitor *quickfix.Acceptor
+	// static holds the sessions registered at construction; started tells
+	// Stop whether the acceptors run (quickfixgo's Stop hangs otherwise).
+	static  []quickfix.SessionID
+	started bool
 
 	// allowed holds the client sessions of the running config.
 	allowed atomic.Pointer[map[quickfix.SessionID]bool]
 
 	mu    sync.Mutex
 	conns map[quickfix.SessionID]net.Conn
+
+	tap atomic.Pointer[Tap]
 }
 
 // New builds the acceptors from cfg. Call Start to open the listeners.
@@ -52,7 +58,7 @@ func New(cfg *config.Config, log *slog.Logger) (*Server, error) {
 	}
 	s.setAllowed(cfg.Server.FIX.Sessions)
 
-	logs := slogLogFactory{log}
+	logs := slogLogFactory{log: log, tap: &s.tap}
 	cs, err := clientSettings(cfg.Server.FIX)
 	if err != nil {
 		return nil, err
@@ -61,18 +67,29 @@ func New(cfg *config.Config, log *slog.Logger) (*Server, error) {
 		return nil, err
 	}
 	s.client.SetConnectionValidator(validatorFunc(s.validate))
+	for id := range cs.SessionSettings() {
+		s.static = append(s.static, id)
+	}
 
 	if cfg.Server.Monitor.Enabled {
 		ms, err := monitorSettings(cfg.Server.FIX, cfg.Server.Monitor)
 		if err != nil {
+			s.unregisterStatic()
 			return nil, err
 		}
-		if s.monitor, err = quickfix.NewAcceptor(s.app, quickfix.NewMemoryStoreFactory(), ms, logs); err != nil {
+		if s.monitor, err = quickfix.NewAcceptor(s.app, newStoreCache(quickfix.NewMemoryStoreFactory()), ms, logs); err != nil {
+			s.unregisterStatic()
 			return nil, err
+		}
+		for id := range ms.SessionSettings() {
+			s.static = append(s.static, id)
 		}
 	}
 	return s, nil
 }
+
+// SetTap installs the raw message tap (the monitor mirror).
+func (s *Server) SetTap(t Tap) { s.tap.Store(&t) }
 
 // Router lets the engines register MsgType handlers (section 5.2).
 func (s *Server) Router() *quickfix.MessageRouter { return s.app.router }
@@ -86,17 +103,32 @@ func (s *Server) Start() error {
 	if s.monitor != nil {
 		if err := s.monitor.Start(); err != nil {
 			s.client.Stop()
+			s.monitor = nil
+			s.unregisterStatic()
 			return err
 		}
 	}
+	s.started = true
 	return nil
 }
 
-// Stop logs out every session and closes the listeners.
+// Stop logs out every session and closes the listeners. Without a prior
+// Start it only releases the sessions registered by New.
 func (s *Server) Stop() {
+	if !s.started {
+		s.unregisterStatic()
+		return
+	}
+	s.started = false
 	s.client.Stop()
 	if s.monitor != nil {
 		s.monitor.Stop()
+	}
+}
+
+func (s *Server) unregisterStatic() {
+	for _, id := range s.static {
+		_ = quickfix.UnregisterSession(id)
 	}
 }
 
@@ -106,6 +138,70 @@ func (s *Server) OnLogout(fn func(quickfix.SessionID)) {
 	s.app.mu.Lock()
 	defer s.app.mu.Unlock()
 	s.app.onLogout = append(s.app.onLogout, fn)
+}
+
+// SessionInfo is the admin view of a session.
+type SessionInfo struct {
+	ID            string         `json:"id"`
+	Kind          string         `json:"kind"` // client or monitor
+	SenderCompID  string         `json:"sender_comp_id"`
+	TargetCompID  string         `json:"target_comp_id"`
+	LoggedOn      bool           `json:"logged_on"`
+	NextSenderSeq int            `json:"next_sender_seq,omitempty"`
+	NextTargetSeq int            `json:"next_target_seq,omitempty"`
+	Remote        string         `json:"remote,omitempty"`
+	Faults        map[string]any `json:"faults,omitempty"`
+}
+
+// Sessions lists the configured client sessions and the monitor session.
+func (s *Server) Sessions(cfg *config.Config) []SessionInfo {
+	var out []SessionInfo
+	add := func(kind string, k config.SessionKey, faults map[string]any) {
+		id := sessionID(s.beginString, k)
+		info := SessionInfo{ID: id.String(), Kind: kind, SenderCompID: k.SenderCompID, TargetCompID: k.TargetCompID,
+			LoggedOn: s.app.loggedOn(id), Faults: faults}
+		if info.LoggedOn {
+			info.NextSenderSeq, _ = quickfix.GetExpectedSenderNum(id)
+			info.NextTargetSeq, _ = quickfix.GetExpectedTargetNum(id)
+			if kind == "client" {
+				if addr, ok := s.client.RemoteAddr(id); ok {
+					info.Remote = addr.String()
+				}
+			}
+		}
+		out = append(out, info)
+	}
+	for _, cs := range cfg.Server.FIX.Sessions {
+		add("client", cs.Key(), cs.Faults)
+	}
+	if m := cfg.Server.Monitor; m.Enabled {
+		add("monitor", config.SessionKey{SenderCompID: m.SenderCompID, TargetCompID: m.TargetCompID}, nil)
+	}
+	return out
+}
+
+// ErrNotLoggedOn is returned by Logout for a session that is not logged on.
+var ErrNotLoggedOn = errors.New("session not logged on")
+
+// Logout sends Logout to a logged-on client session and closes its
+// connection after a grace period. The session may log on again.
+func (s *Server) Logout(id quickfix.SessionID, text string) error {
+	if !s.app.loggedOn(id) {
+		return ErrNotLoggedOn
+	}
+	msg := logout.New()
+	msg.Set(field.NewText(text))
+	if err := quickfix.SendToTarget(msg, id); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	conn := s.conns[id]
+	delete(s.conns, id)
+	s.mu.Unlock()
+	if conn != nil {
+		time.AfterFunc(removedLogoutGrace, func() { _ = conn.Close() })
+	}
+	return nil
 }
 
 // LoggedOn reports whether a session is currently logged on.

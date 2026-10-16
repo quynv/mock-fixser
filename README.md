@@ -2,7 +2,7 @@
 
 A simulated FIX 4.4 server written in Go. It streams prices for configured symbols, accepts orders and answers with ExecutionReports according to predefined rules. See [the design document](./docs/Design%20Document.md) for the full specification.
 
-Status: phase 3 (orders), the MVP gate: mockfix runs entirely from YAML. Clients get market data (V/W/X/Y), single orders (D/F/G/H), order lists (E/K/M) and mass cancel (q), answered by the rule engine, with drop copies to the monitor session. The REST API and the Web UI come in later phases.
+Status: phase 4 (monitor, gateway, REST). Everything of phases 1–3 plus the Admin REST API, runtime commands, Prometheus metrics, the U1 log mirror and the FIX gateway with its WebSocket hub at `/ws`. The Web UI comes in phase 5.
 
 ## Requirements
 
@@ -19,6 +19,10 @@ Status: phase 3 (orders), the MVP gate: mockfix runs entirely from YAML. Clients
 | `internal/marketdata/` | Price models, scheduler, V/W/X/Y subscriptions, conflating and batching publisher |
 | `internal/order/` | Order state, rule engine, action chains, slippage, D/F/G/H, order lists E/K/M, mass cancel q, drop copy |
 | `internal/sched/` | Single-goroutine scheduler for delayed actions |
+| `internal/monitor/` | U1 log mirror to the monitor session, U2 control |
+| `internal/gateway/` | UI_MONITOR initiator and WebSocket hub (`/ws`) |
+| `internal/admin/` | REST API, `/healthz`, `/metrics` |
+| `internal/metrics/` | Prometheus metrics |
 | `internal/app/` | Wiring and startup/shutdown order; end-to-end tests |
 | `internal/clock/` | Real and fake clocks for time-based tests |
 | `schema/config.schema.json` | JSON Schema of the config, embedded in the binary |
@@ -99,3 +103,32 @@ A NewOrderList (E) is checked as a whole first: TotNoOrders must match the entri
 OrderMassCancelRequest (q) supports `MassCancelRequestType` 1 (by symbol) and 7 (all orders of the session); it answers with OrderMassCancelReport (r) listing the affected orders, then an ExecutionReport per canceled order. Other types are rejected in r.
 
 `internal/order/testdata/order_flow.golden` holds the exact message sequence of a scripted order flow on a fake clock; after an intended change run `go test ./internal/order -run Golden -update` and review the diff.
+
+## Admin API and WebSocket
+
+The HTTP server (`server.http.listen`, default `:8080`) serves the REST API under `/api`, `/ws`, `/healthz` and `/metrics`; `--no-ui` skips it and the gateway. Errors are `{ code, message, details[] }`, with validation details carrying the path and YAML line.
+
+| Method | Path | |
+| --- | --- | --- |
+| GET | `/api/config`, `/api/config.yaml` | Running config; `ETag` is the version |
+| PUT | `/api/config` | Replace the config (YAML, or JSON with `Content-Type: application/json`); requires `If-Match: "<version>"`, 409 on a stale version |
+| POST | `/api/config/validate` | Validate only |
+| GET | `/api/config/history` | Saved versions |
+| POST | `/api/config/rollback/{version}` | Apply a saved version as a new version |
+| GET | `/api/schema` | JSON Schema of the config |
+| GET, POST | `/api/symbols` | List (with runtime state), add |
+| GET, PUT, DELETE | `/api/symbols/{symbol}` | View, edit, delete |
+| POST | `/api/symbols/{symbol}/pause`, `/resume` | Runtime: stop or restart ticks |
+| POST | `/api/symbols/{symbol}/price` | Runtime: `{ "mid": 1.09 }` |
+| POST | `/api/symbols/{symbol}/spike` | Runtime: `{ "percent": 2, "direction": "up" }` |
+| GET, POST | `/api/rules` | List by priority, add |
+| PUT, DELETE | `/api/rules/{name}` | Edit (may rename), delete |
+| PUT | `/api/rules/order` | `{ "order": ["a", "b"] }`: priorities 10, 20, ... |
+| POST | `/api/rules/test` | Sample order → matching rule and its action chain with cumulative times |
+| GET | `/api/sessions` | Sessions, logon state, sequence numbers |
+| POST | `/api/sessions/{id}/logout` | `{id}` is the full session ID or the client CompID |
+| GET | `/api/orders?session=&symbol=&status=&limit=` | `status`: `open`, `closed` or a FIX OrdStatus |
+
+Partial edits (symbols, rules) change only that part of the YAML file, keeping comments elsewhere, and go through the same validate-and-swap path, so each creates a new version; `If-Match` is optional for them. Runtime commands take effect at once and are not written to the YAML.
+
+`/ws` carries raw FIX, one message per text frame with SOH replaced by `|`. The browser may send only `35=V|262=<id>|263=1|55=<symbol>` (subscribe; several `55` allowed), `35=V|262=<id>|263=2` (unsubscribe) and `35=U2|5005=log|5006=on|off` (U1 log mirror, off by default). Tabs watching the same symbol share one upstream subscription, and a new tab first receives the last `history_ticks` frames. Drop copies (8, N) go to every tab. A tab that cannot keep up is closed with code 1008.
