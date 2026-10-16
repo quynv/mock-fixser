@@ -550,6 +550,7 @@ type testOrder struct {
 	OrdType     string            `json:"ord_type"`
 	Qty         decimal.Decimal   `json:"qty"`
 	Price       *decimal.Decimal  `json:"price"`
+	TimeInForce string            `json:"time_in_force"`
 	Account     string            `json:"account"`
 	ClOrdID     string            `json:"cl_ord_id"`
 	CompID      string            `json:"comp_id"`
@@ -598,7 +599,9 @@ func (a *api) testRule(w http.ResponseWriter, r *http.Request) {
 	}
 	req := order.Request{
 		MsgType: orDefault(t.MessageType, "D"), CompID: t.CompID, Symbol: t.Symbol,
-		Side: fixValue(t.Side, map[string]string{"BUY": "1", "SELL": "2"}), OrdType: fixValue(orDefault(t.OrdType, "MARKET"), map[string]string{"MARKET": "1"}),
+		Side:        fixValue(t.Side, map[string]string{"BUY": "1", "SELL": "2"}),
+		OrdType:     fixValue(orDefault(t.OrdType, "MARKET"), map[string]string{"MARKET": "1", "LIMIT": "2", "STOP": "3", "STOP_LIMIT": "4"}),
+		TimeInForce: fixValue(t.TimeInForce, map[string]string{"DAY": "0", "GTC": "1", "IOC": "3", "FOK": "4"}),
 		Account: t.Account, ClOrdID: t.ClOrdID, Qty: t.Qty, Price: t.Price,
 		InList: t.InList, ListID: t.ListID, ListSeqNo: t.ListSeqNo,
 		Tag: func(tag int) (string, bool) { v, ok := t.Tags[strconv.Itoa(tag)]; return v, ok },

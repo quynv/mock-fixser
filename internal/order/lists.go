@@ -118,12 +118,7 @@ func (e *Engine) handleNewList(msg *quickfix.Message, id quickfix.SessionID) qui
 
 	l := &List{ListID: listID, Session: id, lists: rs.Lists}
 	for _, en := range entries {
-		r := en.req
-		o := &Order{
-			Session: id, ClOrdID: r.ClOrdID, Symbol: r.Symbol, Side: r.Side, OrdType: r.OrdType, Account: r.Account,
-			OrderQty: r.Qty, LeavesQty: r.Qty, Status: enum.OrdStatus_PENDINGNEW, CreatedAt: now,
-			ListID: listID, ListSeqNo: en.seqNo,
-		}
+		o := newOrder(id, en.req, now)
 		e.newOrderIDLocked(o)
 		e.book.add(o)
 		l.Orders = append(l.Orders, o)

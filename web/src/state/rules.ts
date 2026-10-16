@@ -6,12 +6,14 @@ export type Cond = { field: string; op: string; value: string; tag?: string };
 export const STRING_FIELDS = ["symbol", "account", "cl_ord_id", "comp_id", "list_id"];
 export const NUMBER_FIELDS = ["qty", "price", "list_seq_no"];
 export const NUMBER_OPS = ["gt", "gte", "lt", "lte", "eq"];
-export const FIELDS = [...STRING_FIELDS, "side", "ord_type", ...NUMBER_FIELDS, "tags", "in_list", "probability"];
+export const FIELDS = [...STRING_FIELDS, "side", "ord_type", "time_in_force", ...NUMBER_FIELDS, "tags", "in_list", "probability"];
+export const ORD_TYPES = ["MARKET", "LIMIT", "STOP", "STOP_LIMIT"];
+export const TIFS = ["DAY", "GTC", "IOC", "FOK"];
 
 export function opsFor(field: string): string[] {
   if (NUMBER_FIELDS.includes(field)) return NUMBER_OPS;
-  if (field === "side") return ["eq", "in"];
-  if (field === "ord_type" || field === "probability" || field === "in_list") return ["eq"];
+  if (field === "side" || field === "ord_type" || field === "time_in_force") return ["eq", "in"];
+  if (field === "probability" || field === "in_list") return ["eq"];
   return ["eq", "in", "regex"];
 }
 

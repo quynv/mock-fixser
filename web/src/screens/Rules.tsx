@@ -3,7 +3,7 @@ import { api, HttpError, type RuleTestResult } from "../api";
 import { Field, Input, Panel, Select, toNum } from "../components/ui";
 import { go } from "../router";
 import { draftJS, editDraft, errorsAt, itemIndex, setAt, useConfig } from "../state/config";
-import { condLabel, FIELDS, fromMatch, opsFor, timeline, toMatch, type Action, type Cond } from "../state/rules";
+import { condLabel, FIELDS, fromMatch, opsFor, ORD_TYPES, TIFS, timeline, toMatch, type Action, type Cond } from "../state/rules";
 
 type Rule = { name: string; priority: number; message_type?: string; match?: Record<string, unknown>; actions?: Action[] };
 type ListRule = { name: string; priority: number; match?: Record<string, unknown>; action?: Action };
@@ -201,8 +201,8 @@ function ConditionsEditor({ path, errPath, match }: { path: (string | number)[];
           <Select value={r.op} options={opsFor(r.field)} onChange={(v) => update(i, { op: v })} />
           {r.field === "side" && r.op === "eq" ? (
             <Select value={r.value} options={["BUY", "SELL"]} onChange={(v) => update(i, { value: v })} />
-          ) : r.field === "ord_type" ? (
-            <Select value={r.value} options={["MARKET"]} onChange={(v) => update(i, { value: v })} />
+          ) : (r.field === "ord_type" || r.field === "time_in_force") && r.op === "eq" ? (
+            <Select value={r.value} options={r.field === "ord_type" ? ORD_TYPES : TIFS} onChange={(v) => update(i, { value: v })} />
           ) : r.field === "in_list" ? (
             <Select value={r.value} options={["true", "false"]} onChange={(v) => update(i, { value: v })} />
           ) : (
@@ -272,7 +272,11 @@ function ActionsEditor({
           )}
           {(a.type === "fill" || a.type === "partial_fill") && (
             <>
-              <Select value={a.price_mode ?? "market"} options={["market", "fixed"]} onChange={(v) => update(i, "price_mode", v === "market" ? undefined : v)} />
+              <Select
+                value={a.price_mode ?? "market"}
+                options={["market", "market_driven", "limit_immediate", "fixed"]}
+                onChange={(v) => update(i, "price_mode", v === "market" ? undefined : v)}
+              />
               {a.price_mode === "fixed" && <Input type="number" value={a.price} placeholder="price" onCommit={(v) => update(i, "price", toNum(v))} />}
             </>
           )}
@@ -313,7 +317,7 @@ function ActionsEditor({
 
 /** Rule tester: a sample order against the draft (section 11.2). */
 function Tester({ draft }: { draft: string }) {
-  const [o, setO] = useState<Record<string, string>>({ message_type: "D", symbol: "", side: "BUY", qty: "100", cl_ord_id: "", comp_id: "", tags: "" });
+  const [o, setO] = useState<Record<string, string>>({ message_type: "D", symbol: "", side: "BUY", ord_type: "MARKET", time_in_force: "DAY", qty: "100", cl_ord_id: "", comp_id: "", tags: "" });
   const [res, setRes] = useState<RuleTestResult>();
   const [err, setErr] = useState<string>();
   const set = (k: string) => (v: string) => setO({ ...o, [k]: v });
@@ -325,7 +329,8 @@ function Tester({ draft }: { draft: string }) {
       );
       setRes(
         await api.testRule({
-          message_type: o.message_type, symbol: o.symbol, side: o.side, qty: o.qty || "0", price: o.price || undefined,
+          message_type: o.message_type, symbol: o.symbol, side: o.side, ord_type: o.ord_type, time_in_force: o.time_in_force,
+          qty: o.qty || "0", price: o.price || undefined,
           account: o.account, cl_ord_id: o.cl_ord_id, comp_id: o.comp_id, tags,
           in_list: o.list_id ? true : undefined, list_id: o.list_id, list_seq_no: o.list_seq_no ? Number(o.list_seq_no) : undefined,
           yaml: draft,
@@ -352,6 +357,14 @@ function Tester({ draft }: { draft: string }) {
         <label className="field">
           <span className="muted">side</span>
           <Select value={o.side} options={["BUY", "SELL"]} onChange={set("side")} />
+        </label>
+        <label className="field">
+          <span className="muted">ord_type</span>
+          <Select value={o.ord_type} options={ORD_TYPES} onChange={set("ord_type")} />
+        </label>
+        <label className="field">
+          <span className="muted">time_in_force</span>
+          <Select value={o.time_in_force} options={TIFS} onChange={set("time_in_force")} />
         </label>
         <label className="field">
           <span className="muted">tags (9001=VIP, …)</span>

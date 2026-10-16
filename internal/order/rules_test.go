@@ -156,8 +156,8 @@ func TestRuleValidationErrors(t *testing.T) {
 		{"raw FIX side", `order_rules:
   - { name: r, priority: 1, match: { side: "1" }, actions: [ { type: ack } ] }
 `, "order_rules[0].match.side", 8},
-		{"ord_type other than MARKET", `order_rules:
-  - { name: r, priority: 1, match: { ord_type: LIMIT }, actions: [ { type: ack } ] }
+		{"unknown ord_type", `order_rules:
+  - { name: r, priority: 1, match: { ord_type: PEGGED }, actions: [ { type: ack } ] }
 `, "order_rules[0].match.ord_type", 8},
 		{"regex on side", `order_rules:
   - { name: r, priority: 1, match: { side: { regex: "B.*" } }, actions: [ { type: ack } ] }

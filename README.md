@@ -80,7 +80,7 @@ A V with `SubscriptionRequestType=1` gets one W per symbol, then X on every tick
 
 ## Orders
 
-Only Market orders (`OrdType=1`) are accepted; other types get `OrdRejReason=11` before any rule runs, as do unknown symbols (`1`), non-positive quantities (`13`) and duplicate ClOrdIDs (`6`).
+OrdType 1 (Market), 2 (Limit), 3 (Stop) and 4 (Stop limit) are accepted, with TimeInForce 0 (Day, the default), 1 (GTC), 3 (IOC) or 4 (FOK). Other types and times in force get `OrdRejReason=11` before any rule runs; so do unknown symbols (`1`), non-positive quantities (`13`) and duplicate ClOrdIDs (`6`). Limit orders need `Price`, stop orders `StopPx` (`99` otherwise).
 
 A new order is matched once against `order_rules` in ascending `priority`; the first match decides its action chain, otherwise `default_action` (built-in default: ack, then fill). Conditions in `match` are ANDed:
 
@@ -88,7 +88,8 @@ A new order is matched once against `order_rules` in ascending `priority`; the f
 | --- | --- |
 | `symbol`, `account`, `cl_ord_id`, `comp_id` | value, list, `{ regex: "..." }` |
 | `side` | `BUY` or `SELL`, or a list |
-| `ord_type` | `MARKET` (the only supported order type) |
+| `ord_type` | `MARKET`, `LIMIT`, `STOP`, `STOP_LIMIT`, or a list |
+| `time_in_force` | `DAY`, `GTC`, `IOC`, `FOK`, or a list (no TimeInForce is `DAY`) |
 | `qty`, `price` | number, or `{ gt, gte, lt, lte, eq }` |
 | `tags` | `{ "9001": VIP }`, each value in any string form |
 | `probability` | `0.2`: a stable 20% of orders, decided by hashing the rule name, CompID and ClOrdID |
@@ -96,7 +97,16 @@ A new order is matched once against `order_rules` in ascending `priority`; the f
 | `list_id` | value, list, `{ regex: "..." }` |
 | `list_seq_no` | number, or `{ gt, gte, lt, lte, eq }` (list orders only) |
 
-Actions run at their cumulative `delay_ms`: `ack`, `fill` (remaining quantity), `partial_fill` (`ratio` or `qty`, optional `count` fills `delay_ms` apart), `reject` (`reason`, `text`), `cancel`, `expire`, `ignore`, `business_reject`. Fills use `price_mode: market` (ask for buys, bid for sells, plus the symbol's slippage, always against the client) or `price_mode: fixed` with `price`. Slippage types: `fixed` (`ticks`), `percent` (`value`), `random` (`min_ticks`..`max_ticks`, seeded from the symbol `seed`).
+Actions run at their cumulative `delay_ms`: `ack`, `fill` (remaining quantity), `partial_fill` (`ratio` or `qty`, optional `count` fills `delay_ms` apart), `reject` (`reason`, `text`), `cancel`, `expire`, `ignore`, `business_reject`. Fill prices (`price_mode`, section 7.4):
+
+| price_mode | Fill price |
+| --- | --- |
+| `market` (default) | Ask for buys, bid for sells, plus the symbol's slippage (always against the client). A limit order fills only once the market reaches its limit, and never worse than the limit. |
+| `market_driven` | Same as `market`; named for rules that wait on limit orders. |
+| `limit_immediate` | The order's limit price at once, no slippage (market orders use the market price). |
+| `fixed` | The rule's `price`, no slippage. |
+
+A fill step that cannot execute (limit not reached, stop not triggered) waits and is retried on every tick of the symbol. A stop order triggers when the ask (buy) or bid (sell) reaches `StopPx`, then acts as a market or limit order. IOC orders cancel whatever cannot fill when a fill step runs and what the chain leaves open; FOK orders fill completely at once or are canceled (a `partial_fill` step fills everything). A replace may change OrderQty, and Price or StopPx of limit and stop orders; the OrdType cannot change. Day orders do not expire at the end of the day. Slippage types: `fixed` (`ticks`), `percent` (`value`), `random` (`min_ticks`..`max_ticks`, seeded from the symbol `seed`).
 
 Rules with `message_type: F` or `G` take exactly one action: `ack` (accept, optionally after `delay_ms`), `reject` (OrderCancelReject with `reason`) or `ignore`. Without a matching rule a cancel or replace is accepted at once. A cancel drops the order's pending actions; a replace may change only `OrderQty`, and the remaining actions continue with the new quantity. Orders in flight keep their action chain when the rules are reloaded.
 

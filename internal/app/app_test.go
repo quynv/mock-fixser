@@ -368,3 +368,43 @@ default_action: [ { type: ack } ]
 		t.Fatalf("final ListStatusType = %s, want 5", typ)
 	}
 }
+
+// A limit order waits for the market; a runtime price move fills it.
+func TestLimitOrderFillsWhenMarketMoves(t *testing.T) {
+	port := freePort(t)
+	path := filepath.Join(t.TempDir(), "mock.yaml")
+	writeConfig(t, path, port, symbolsYAML+"default_action: [ { type: ack }, { type: fill } ]\n")
+	a, err := New(path, slog.New(slog.DiscardHandler), Options{NoUI: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- a.Run(ctx) }()
+	t.Cleanup(func() { cancel(); <-done })
+	c := dial(t, port)
+	if err := a.engine.Pause("AAPL"); err != nil {
+		t.Fatal(err)
+	}
+
+	d := newordersingle.New(field.NewClOrdID("LMT"), field.NewSide(enum.Side_BUY), field.NewTransactTime(time.Now()),
+		field.NewOrdType(enum.OrdType_LIMIT))
+	d.SetSymbol("AAPL")
+	d.SetOrderQty(decimal.NewFromInt(10), 0)
+	d.SetPrice(decimal.NewFromInt(210), 2)
+	if err := quickfix.SendToTarget(d, c.id); err != nil {
+		t.Fatal(err)
+	}
+	ack := executionreport.FromMessage(c.waitFor(t, "8", ""))
+	if et, _ := ack.GetExecType(); et != enum.ExecType_NEW {
+		t.Fatalf("first report %s, want New", et)
+	}
+	if err := a.engine.SetPrice("AAPL", 209); err != nil {
+		t.Fatal(err)
+	}
+	fill := executionreport.FromMessage(c.waitFor(t, "8", ""))
+	px, _ := fill.GetLastPx()
+	if et, _ := fill.GetExecType(); et != enum.ExecType_TRADE || px.GreaterThan(decimal.NewFromInt(210)) {
+		t.Fatalf("fill %s at %s, want a trade at or below 210", et, px)
+	}
+}

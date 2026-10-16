@@ -248,8 +248,10 @@ func TestPartialFillsAndInvariants(t *testing.T) {
 
 func TestChecksBeforeRules(t *testing.T) {
 	h := newHarness(t, "", aaplQuotes(nil), false)
-	h.handle(nos("L1", enum.Side_BUY, "10", enum.OrdType_LIMIT))
+	h.handle(nos("P1", enum.Side_BUY, "10", enum.OrdType("P"))) // pegged: unsupported
 	h.expect(ExecType, "8", OrdStatus, "8", tag.OrdRejReason, "11")
+	h.handle(nos("L1", enum.Side_BUY, "10", enum.OrdType_LIMIT)) // no Price
+	h.expect(ExecType, "8", tag.OrdRejReason, "99", tag.Text, "Price is required for limit orders")
 
 	unknown := nos("U1", enum.Side_BUY, "10", enum.OrdType_MARKET)
 	unknown.SetSymbol("NOPE")
@@ -261,8 +263,8 @@ func TestChecksBeforeRules(t *testing.T) {
 	h.expect(ExecType, "F", tag.ClOrdID, "C1")
 	h.handle(nos("C1", enum.Side_BUY, "10", enum.OrdType_MARKET))
 	h.expect(ExecType, "8", tag.OrdRejReason, "6", tag.OrderID, "NONE")
-	if o := h.e.Orders(client1); len(o) != 3 {
-		t.Fatalf("stored %d orders, want 3 (the duplicate is not stored)", len(o))
+	if o := h.e.Orders(client1); len(o) != 4 {
+		t.Fatalf("stored %d orders, want 4 (the duplicate is not stored)", len(o))
 	}
 }
 

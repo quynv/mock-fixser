@@ -29,7 +29,10 @@ type Request struct {
 	ClOrdID string
 	Qty     decimal.Decimal
 	Price   *decimal.Decimal
-	Tag     func(tag int) (string, bool)
+	StopPx  *decimal.Decimal
+	// TimeInForce is the FIX value (0 Day, 1 GTC, 3 IOC, 4 FOK); empty is Day.
+	TimeInForce string
+	Tag         func(tag int) (string, bool)
 
 	// Set for orders that arrive in a NewOrderList (section 7.6).
 	InList    bool
@@ -311,8 +314,10 @@ func compileSteps(path, msgType string, actions []config.Action, add func(string
 				st.Text = s
 			case "price_mode":
 				s, _ := v.(string)
-				if s != "market" && s != "fixed" {
-					add(kp, "price_mode must be market or fixed (limit modes come with Limit orders)")
+				switch s {
+				case "market", "fixed", "limit_immediate", "market_driven":
+				default:
+					add(kp, "price_mode must be market, fixed, limit_immediate or market_driven")
 				}
 				st.PriceMode = s
 			case "ratio", "qty", "price":
@@ -359,6 +364,12 @@ var stringFields = map[string]strField{
 	"cl_ord_id": func(r Request) string { return r.ClOrdID },
 	"comp_id":   func(r Request) string { return r.CompID },
 	"list_id":   func(r Request) string { return r.ListID },
+	"time_in_force": func(r Request) string {
+		if r.TimeInForce == "" {
+			return tifDay
+		}
+		return r.TimeInForce
+	},
 }
 
 type condFunc func(Request) bool
@@ -369,7 +380,8 @@ func (f condFunc) match(_ string, r Request) bool { return f(r) }
 // Market orders only, so MARKET is the only ord_type.
 var (
 	sideNames    = enumNames{"BUY": "1", "SELL": "2"}
-	ordTypeNames = enumNames{"MARKET": "1"}
+	ordTypeNames = enumNames{"MARKET": "1", "LIMIT": "2", "STOP": "3", "STOP_LIMIT": "4"}
+	tifNames     = enumNames{"DAY": "0", "GTC": "1", "IOC": "3", "FOK": "4"}
 )
 
 type enumNames map[string]string
@@ -437,6 +449,8 @@ func compileCond(key string, v any) (cond, error) {
 		names = sideNames
 	case "ord_type":
 		names = ordTypeNames
+	case "time_in_force":
+		names = tifNames
 	}
 	sc, err := compileStr(v, names)
 	if err != nil {

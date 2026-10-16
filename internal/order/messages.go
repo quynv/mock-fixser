@@ -67,6 +67,15 @@ func executionReport(o *Order, f erFields) *quickfix.Message {
 	if o.ListID != "" {
 		m.SetListID(o.ListID)
 	}
+	if o.Price != nil {
+		m.SetPrice(dec(*o.Price))
+	}
+	if o.StopPx != nil {
+		m.SetStopPx(dec(*o.StopPx))
+	}
+	if o.TimeInForce != "" {
+		m.SetTimeInForce(enum.TimeInForce(o.TimeInForce))
+	}
 	if f.lastQty != nil {
 		m.SetLastQty(dec(*f.lastQty))
 		m.SetLastPx(dec(*f.lastPx))

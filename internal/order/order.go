@@ -57,12 +57,25 @@ type Order struct {
 	CreatedAt   time.Time
 	ListID      string // set for orders of a NewOrderList
 	ListSeqNo   int
+	Price       *decimal.Decimal // limit price (OrdType 2, 4)
+	StopPx      *decimal.Decimal // stop price (OrdType 3, 4)
+	TimeInForce string
+	Triggered   bool // stop reached
 
 	seq uint64 // creation order
 
 	// chain is bumped when an order's pending actions are cancelled; steps
 	// scheduled under an older value do nothing.
 	chain uint64
+}
+
+func newOrder(id quickfix.SessionID, r Request, now time.Time) *Order {
+	return &Order{
+		Session: id, ClOrdID: r.ClOrdID, Symbol: r.Symbol, Side: r.Side, OrdType: r.OrdType, Account: r.Account,
+		OrderQty: r.Qty, LeavesQty: r.Qty, Status: enum.OrdStatus_PENDINGNEW, CreatedAt: now,
+		Price: r.Price, StopPx: r.StopPx, TimeInForce: r.TimeInForce,
+		ListID: r.ListID, ListSeqNo: r.ListSeqNo,
+	}
 }
 
 func (o *Order) Closed() bool {

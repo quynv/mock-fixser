@@ -44,6 +44,7 @@ type Engine struct {
 	execSeq  uint64
 	massSeq  uint64
 	outboxes map[quickfix.SessionID]*outbox
+	waiting  map[string][]waiter // fill steps waiting for the market, by symbol
 }
 
 func NewEngine(cfg *config.Config, quotes Quotes, s *sched.Scheduler, log *slog.Logger, send Sender) (*Engine, error) {
@@ -54,6 +55,7 @@ func NewEngine(cfg *config.Config, quotes Quotes, s *sched.Scheduler, log *slog.
 		log: log, sched: s, quotes: quotes, send: send,
 		book:     newBook(DefaultRetention),
 		outboxes: map[quickfix.SessionID]*outbox{},
+		waiting:  map[string][]waiter{},
 	}
 	if err := e.SetConfig(cfg); err != nil {
 		return nil, err
@@ -173,6 +175,10 @@ func (in incoming) request(msgType string, id quickfix.SessionID) Request {
 	if p, ok := in.dec(tag.Price); ok {
 		r.Price = &p
 	}
+	if p, ok := in.dec(tag.StopPx); ok {
+		r.StopPx = &p
+	}
+	r.TimeInForce = in.str(tag.TimeInForce)
 	return r
 }
 
@@ -184,11 +190,7 @@ func (e *Engine) handleNew(msg *quickfix.Message, id quickfix.SessionID) quickfi
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	o := &Order{
-		Session: id, ClOrdID: req.ClOrdID, Symbol: req.Symbol, Side: req.Side, OrdType: req.OrdType,
-		Account: req.Account, OrderQty: req.Qty, LeavesQty: req.Qty, Status: enum.OrdStatus_PENDINGNEW,
-		CreatedAt: now,
-	}
+	o := newOrder(id, req, now)
 
 	// Checks before rules (section 7.1). A duplicate ClOrdID is not stored,
 	// so it cannot shadow the original order.
@@ -216,8 +218,7 @@ func (e *Engine) acceptLocked(o *Order, req Request, rs *RuleSet, now time.Time)
 	case !req.Qty.IsPositive():
 		e.rejectNewLocked(o, enum.OrdRejReason_INCORRECTQUANTITY, "OrderQty must be positive")
 		return
-	case req.OrdType != string(enum.OrdType_MARKET):
-		e.rejectNewLocked(o, enum.OrdRejReason_UNSUPPORDERCHAR, "Only market orders (OrdType=1) are supported")
+	case !e.checkOrderLocked(o):
 		return
 	case !known:
 		e.rejectNewLocked(o, enum.OrdRejReason_UNKNOWNSYM, "Unknown symbol")
@@ -254,6 +255,16 @@ func (e *Engine) scheduleLocked(o *Order, steps []Step, now time.Time) {
 			e.sched.At(at, func() { e.runStep(o, gen, st, k) })
 		}
 	}
+	// IOC and FOK cancel whatever the chain left open (section 7.1).
+	if o.TimeInForce == tifIOC || o.TimeInForce == tifFOK {
+		e.sched.At(at, func() {
+			e.mu.Lock()
+			defer e.mu.Unlock()
+			if o.chain == gen {
+				e.cancelRestLocked(o, tifName(o.TimeInForce)+": remainder canceled")
+			}
+		})
+	}
 }
 
 func (e *Engine) runStep(o *Order, gen uint64, st Step, piece int) {
@@ -269,13 +280,15 @@ func (e *Engine) runStep(o *Order, gen uint64, st Step, piece int) {
 		}
 		e.reportLocked(o, enum.ExecType_NEW, nil)
 	case "fill":
-		e.fillLocked(o, st, o.LeavesQty)
+		e.tryFillLocked(o, gen, st, func() decimal.Decimal { return o.LeavesQty })
 	case "partial_fill":
-		total := st.Qty
-		if total.IsZero() {
-			total = o.OrderQty.Mul(st.Ratio)
-		}
-		e.fillLocked(o, st, splitPiece(total, st.Count, piece, o.OrderQty))
+		e.tryFillLocked(o, gen, st, func() decimal.Decimal {
+			total := st.Qty
+			if total.IsZero() {
+				total = o.OrderQty.Mul(st.Ratio)
+			}
+			return splitPiece(total, st.Count, piece, o.OrderQty)
+		})
 	case "reject":
 		o.close(enum.OrdStatus_REJECTED)
 		e.book.markClosed(o)
@@ -313,18 +326,8 @@ func splitPiece(total decimal.Decimal, count, k int, orderQty decimal.Decimal) d
 	return part
 }
 
-func (e *Engine) fillLocked(o *Order, st Step, qty decimal.Decimal) {
-	qty = decimal.Min(qty, o.LeavesQty)
-	if !qty.IsPositive() {
-		return
-	}
-	px, ok := e.fillPrice(o, st)
-	if !ok {
-		o.close(enum.OrdStatus_CANCELED)
-		e.book.markClosed(o)
-		e.reportLocked(o, enum.ExecType_CANCELED, func(r *erFields) { r.text = "No market price for " + o.Symbol })
-		return
-	}
+// execFillLocked fills qty at px.
+func (e *Engine) execFillLocked(o *Order, qty, px decimal.Decimal) {
 	e.execSeq++
 	f := Fill{ExecID: fmt.Sprintf("EXE-%d", e.execSeq), Qty: qty, Px: px, Time: e.sched.Now()}
 	if o.Status == enum.OrdStatus_PENDINGNEW {
@@ -339,24 +342,6 @@ func (e *Engine) fillLocked(o *Order, st Step, qty decimal.Decimal) {
 		r.execID = f.ExecID
 		r.lastQty, r.lastPx = &f.Qty, &f.Px
 	})
-}
-
-// fillPrice: market fills at the ask for buys and the bid for sells, plus
-// slippage; fixed fills at the rule's price (section 7.4).
-func (e *Engine) fillPrice(o *Order, st Step) (decimal.Decimal, bool) {
-	if st.PriceMode == "fixed" {
-		return st.Price, true
-	}
-	q, cfg, ok := e.quotes.Last(o.Symbol)
-	if !ok {
-		return decimal.Decimal{}, false
-	}
-	px := q.Bid
-	if isBuy(o.Side) {
-		px = q.Ask
-	}
-	tick := decimal.NewFromFloat(cfg.TickSize)
-	return slip(decimal.NewFromFloat(px), o.Side, cfg.Slippage, tick, fillRand(cfg, o)), true
 }
 
 // fillRand is seeded from the symbol seed, the order and its fill count, so
@@ -410,17 +395,23 @@ func (e *Engine) handleReplace(msg *quickfix.Message, id quickfix.SessionID) qui
 		e.cancelRejectLocked(id, o, orig, clOrdID, enum.CxlRejResponseTo_ORDCXLREPREQ, reason, text)
 		return nil
 	}
+	newPrice, hasPrice := in.dec(tag.Price)
+	newStop, stopSet := in.dec(tag.StopPx)
 	switch {
 	case o == nil || o.Closed():
 		return reject(enum.CxlRejReason_UNKNOWN, "Unknown or closed order")
 	case e.book.byClOrd(id, clOrdID) != nil:
 		return reject(enum.CxlRejReason_DUPCLORDID, "Duplicate ClOrdID")
-	case in.str(tag.OrdType) != string(enum.OrdType_MARKET):
-		return reject(enum.CxlRejReason_BROKEROPT, "Only OrderQty may change; OrdType must stay 1 (Market)")
+	case in.str(tag.OrdType) != o.OrdType:
+		return reject(enum.CxlRejReason_BROKEROPT, "OrdType cannot change")
 	case in.str(tag.Symbol) != o.Symbol || in.str(tag.Side) != o.Side:
-		return reject(enum.CxlRejReason_BROKEROPT, "Only OrderQty may change; Symbol and Side must match the order")
+		return reject(enum.CxlRejReason_BROKEROPT, "Symbol and Side must match the order")
 	case !newQty.GreaterThan(o.CumQty):
 		return reject(enum.CxlRejReason_BROKEROPT, "OrderQty must exceed CumQty")
+	case hasLimit(o.OrdType) && (!hasPrice || !newPrice.IsPositive()):
+		return reject(enum.CxlRejReason_BROKEROPT, "Price is required for limit orders")
+	case hasStop(o.OrdType) && (!stopSet || !newStop.IsPositive()):
+		return reject(enum.CxlRejReason_BROKEROPT, "StopPx is required for stop orders")
 	}
 	e.decideLocked(o, in.request("G", id), enum.CxlRejResponseTo_ORDCXLREPREQ, orig, clOrdID, func() {
 		if !newQty.GreaterThan(o.CumQty) { // fills arrived while the replace was delayed
@@ -431,6 +422,12 @@ func (e *Engine) handleReplace(msg *quickfix.Message, id quickfix.SessionID) qui
 		e.book.index(o, clOrdID)
 		o.OrderQty = newQty
 		o.LeavesQty = newQty.Sub(o.CumQty)
+		if hasLimit(o.OrdType) {
+			o.Price = &newPrice
+		}
+		if hasStop(o.OrdType) {
+			o.StopPx = &newStop
+		}
 		// Remaining steps keep running and read the new quantities.
 		e.reportLocked(o, enum.ExecType_REPLACED, solicited)
 	})

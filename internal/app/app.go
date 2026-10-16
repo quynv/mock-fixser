@@ -61,7 +61,12 @@ func New(configPath string, log *slog.Logger, opts Options) (*App, error) {
 		return nil, err
 	}
 	clk := clock.Real{}
-	if a.engine, err = marketdata.NewEngine(cfg.Symbols, clk, log, func(q marketdata.Quote) { a.pub.OnQuote(q) }); err != nil {
+	// Every tick goes to the subscribers and to orders waiting for the market.
+	onQuote := func(q marketdata.Quote) {
+		a.pub.OnQuote(q)
+		a.orders.OnQuote(q)
+	}
+	if a.engine, err = marketdata.NewEngine(cfg.Symbols, clk, log, onQuote); err != nil {
 		a.srv.Stop()
 		return nil, err
 	}
