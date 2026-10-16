@@ -1,0 +1,193 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/quynv/mock-fixser/schema/config.schema.json",
+  "title": "mockfix configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["server", "symbols"],
+  "properties": {
+    "version": { "type": "integer", "minimum": 0 },
+    "server": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fix"],
+      "properties": {
+        "fix": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["sessions"],
+          "properties": {
+            "listen": { "$ref": "#/$defs/hostPort" },
+            "version": { "enum": ["FIX.4.4"] },
+            "data_dictionary": { "type": "string", "minLength": 1 },
+            "sessions": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/session" }
+            }
+          }
+        },
+        "monitor": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "listen": { "$ref": "#/$defs/hostPort" },
+            "sender_comp_id": { "$ref": "#/$defs/compID" },
+            "target_comp_id": { "$ref": "#/$defs/compID" },
+            "drop_copy": { "type": "boolean" },
+            "mirror_log": { "type": "boolean" },
+            "mirror_buffer": { "type": "integer", "minimum": 1 },
+            "mirror_exclude": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+          }
+        },
+        "http": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "listen": { "$ref": "#/$defs/hostPort" },
+            "history_ticks": { "type": "integer", "minimum": 0 }
+          }
+        }
+      }
+    },
+    "market_data": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "batching": { "$ref": "#/$defs/batching" }
+      }
+    },
+    "symbols": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/symbol" }
+    },
+    "order_rules": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/rule" }
+    },
+    "default_action": { "$ref": "#/$defs/actions" }
+  },
+  "$defs": {
+    "hostPort": {
+      "type": "string",
+      "pattern": "^[^:]*:[0-9]{1,5}$"
+    },
+    "compID": { "type": "string", "minLength": 1, "pattern": "^[^\\s|]+$" },
+    "session": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sender_comp_id", "target_comp_id"],
+      "properties": {
+        "sender_comp_id": { "$ref": "#/$defs/compID" },
+        "target_comp_id": { "$ref": "#/$defs/compID" },
+        "faults": { "type": "object" },
+        "market_data": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "batching": { "$ref": "#/$defs/batching" }
+          }
+        }
+      }
+    },
+    "batching": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "scope": { "enum": ["per_request", "per_session"] },
+        "flush_interval_ms": { "type": "integer", "minimum": 1 },
+        "max_symbols_per_msg": { "type": "integer", "minimum": 1 },
+        "max_entries_per_msg": { "type": "integer", "minimum": 1 },
+        "conflate": { "type": "boolean" },
+        "initial_snapshot": { "enum": ["per_symbol_w", "batched_x"] }
+      }
+    },
+    "symbol": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["symbol", "initial_price", "min", "max", "tick_size", "speed"],
+      "properties": {
+        "symbol": { "type": "string", "minLength": 1 },
+        "initial_price": { "type": "number", "exclusiveMinimum": 0 },
+        "min": { "type": "number", "exclusiveMinimum": 0 },
+        "max": { "type": "number", "exclusiveMinimum": 0 },
+        "tick_size": { "type": "number", "exclusiveMinimum": 0 },
+        "model": { "enum": ["random_walk", "gbm", "sine", "replay"] },
+        "volatility": { "type": "number", "minimum": 0 },
+        "drift": { "type": "number" },
+        "sine": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["amplitude", "period_ms"],
+          "properties": {
+            "amplitude": { "type": "number", "minimum": 0 },
+            "period_ms": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "replay": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["file"],
+          "properties": {
+            "file": { "type": "string", "minLength": 1 },
+            "loop": { "type": "boolean" }
+          }
+        },
+        "speed": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "ticks_per_second": { "type": "number", "exclusiveMinimum": 0 },
+            "interval_ms": { "type": "integer", "minimum": 1 },
+            "jitter_ms": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "spread": { "type": "number", "minimum": 0 },
+        "depth_levels": { "type": "integer", "minimum": 1 },
+        "update_mode": { "enum": ["incremental", "snapshot"] },
+        "slippage": { "$ref": "#/$defs/slippage" },
+        "seed": { "type": "integer" }
+      }
+    },
+    "slippage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": { "enum": ["none", "fixed", "percent", "random"] },
+        "ticks": { "type": "integer", "minimum": 0 },
+        "value": { "type": "number", "minimum": 0 },
+        "min_ticks": { "type": "integer", "minimum": 0 },
+        "max_ticks": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "rule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "priority", "actions"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "priority": { "type": "integer" },
+        "message_type": { "enum": ["D", "F", "G"] },
+        "match": { "type": "object" },
+        "actions": { "$ref": "#/$defs/actions" }
+      }
+    },
+    "actions": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/action" }
+    },
+    "action": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": {
+          "enum": ["ack", "fill", "partial_fill", "reject", "cancel", "expire", "ignore", "business_reject"]
+        },
+        "delay_ms": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}

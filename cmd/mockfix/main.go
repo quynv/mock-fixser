@@ -3,12 +3,18 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
+
+	"golang.org/x/sync/errgroup"
+
+	"github.com/quynv/mock-fixser/internal/config"
+	"github.com/quynv/mock-fixser/internal/fixserver"
 )
 
 // version is set at build time with -ldflags "-X main.version=...".
@@ -37,7 +43,42 @@ func main() {
 	defer stop()
 
 	slog.Info("mockfix starting", "version", version, "config", *configPath, "no_ui", *noUI)
-	// Config loading, acceptors, engines and HTTP are wired in from phase 1 (design doc, section 12.1).
-	<-ctx.Done()
+	if err := run(ctx, *configPath); err != nil {
+		var verr *config.ValidationError
+		if errors.As(err, &verr) {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(2)
+		}
+		slog.Error("mockfix failed", "error", err)
+		os.Exit(1)
+	}
 	slog.Info("mockfix stopped")
+}
+
+// run follows the startup and shutdown order of section 12.1. Engines,
+// the gateway and HTTP join in later phases.
+func run(ctx context.Context, configPath string) error {
+	store, err := config.Open(configPath, config.Options{})
+	if err != nil {
+		return err
+	}
+	cfg := store.Current()
+	slog.Info("config loaded", "version", cfg.Version, "sessions", len(cfg.Server.FIX.Sessions), "symbols", len(cfg.Symbols))
+
+	srv, err := fixserver.New(cfg, slog.Default())
+	if err != nil {
+		return err
+	}
+	store.Subscribe(srv.OnConfigChange)
+	if err := srv.Start(); err != nil {
+		return err
+	}
+	slog.Info("acceptors started", "client", cfg.Server.FIX.Listen, "monitor", cfg.Server.Monitor.Listen, "monitor_enabled", cfg.Server.Monitor.Enabled)
+
+	g, gctx := errgroup.WithContext(ctx)
+	g.Go(func() error { return store.Watch(gctx) })
+
+	<-gctx.Done()
+	srv.Stop()
+	return g.Wait()
 }

@@ -1,0 +1,69 @@
+version: 12
+server:
+  fix:
+    listen: 0.0.0.0:9876
+    version: FIX.4.4
+    data_dictionary: spec/FIX44.xml
+    sessions:
+      - { sender_comp_id: MOCKSRV, target_comp_id: CLIENT1 }
+      - { sender_comp_id: MOCKSRV, target_comp_id: CLIENT2, faults: { seq_gap: { every: 500 } } }
+  monitor:
+    enabled: true
+    listen: 127.0.0.1:9877
+    sender_comp_id: MOCKSRV
+    target_comp_id: UI_MONITOR
+    drop_copy: true
+    mirror_log: true
+    mirror_buffer: 10000
+    mirror_exclude: ["0"]
+  http:
+    listen: 0.0.0.0:8080
+    history_ticks: 5000
+
+symbols:
+  - symbol: EURUSD
+    initial_price: 1.0850
+    min: 1.0700
+    max: 1.1000
+    tick_size: 0.00001
+    model: gbm
+    volatility: 0.0002
+    speed: { ticks_per_second: 5, jitter_ms: 50 }
+    spread: 0.00010
+    depth_levels: 5
+    update_mode: incremental
+    slippage: { type: random, min_ticks: 0, max_ticks: 3 }
+    seed: 42
+  - symbol: AAPL
+    initial_price: 230.0
+    min: 200
+    max: 260
+    tick_size: 0.01
+    model: replay
+    replay: { file: data/aapl.csv, loop: true }
+    speed: { interval_ms: 500 }
+    spread: 0.02
+    slippage: { type: percent, value: 0.05 }
+
+order_rules:
+  - name: reject-large-qty
+    priority: 1
+    match: { qty: { gt: 1000000 } }
+    actions:
+      - { type: reject, reason: 3, text: "Order exceeds limit" }
+  - name: timeout-test
+    priority: 5
+    match: { cl_ord_id: { regex: "^TIMEOUT-" } }
+    actions:
+      - { type: ignore }
+  - name: partial-then-fill-aapl
+    priority: 10
+    match: { symbol: AAPL, side: BUY, ord_type: MARKET }
+    actions:
+      - { type: ack, delay_ms: 50 }
+      - { type: partial_fill, ratio: 0.4, delay_ms: 300 }
+      - { type: fill, delay_ms: 800 }
+
+default_action:
+  - { type: ack, delay_ms: 20 }
+  - { type: fill, delay_ms: 100 }
