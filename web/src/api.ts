@@ -52,6 +52,8 @@ export const api = {
     request<SymbolState>("POST", `/api/symbols/${encodeURIComponent(s)}/price`, JSON.stringify({ mid }), json),
   spike: (s: string, percent: number, direction: "up" | "down") =>
     request<SymbolState>("POST", `/api/symbols/${encodeURIComponent(s)}/spike`, JSON.stringify({ percent, direction }), json),
+  quoteCancel: (symbols: string[] = []) =>
+    request<{ sessions: string[]; subscriptions_canceled: number }>("POST", "/api/quote-cancel", JSON.stringify({ symbols }), json),
   testRule: (order: Record<string, unknown>) =>
     request<RuleTestResult>("POST", "/api/rules/test", JSON.stringify(order), json),
   sessions: () => request<SessionInfo[]>("GET", "/api/sessions"),

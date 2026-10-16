@@ -3,6 +3,7 @@ package marketdata
 import (
 	"fmt"
 	"log/slog"
+	"slices"
 	"sync"
 	"sync/atomic"
 
@@ -46,14 +47,19 @@ type Publisher struct {
 
 	batching atomic.Pointer[batchingSettings]
 
-	mu       sync.Mutex
-	sessions map[quickfix.SessionID]*sessionState
-	bySymbol map[string]map[*subscription]struct{}
+	mu             sync.Mutex
+	sessions       map[quickfix.SessionID]*sessionState
+	bySymbol       map[string]map[*subscription]struct{}
+	quoteCancelSeq int
 }
 
 type batchingSettings struct {
 	global   config.Batching
 	sessions map[config.SessionKey]config.Batching
+	// bothSides: send bid and offer whatever the request asks for.
+	bothSides        bool
+	sessionBothSides map[config.SessionKey]bool
+	monitor          config.SessionKey // never sent QuoteCancel
 }
 
 func NewPublisher(md QuoteSource, cfg *config.Config, clk clock.Clock, log *slog.Logger, send Sender) *Publisher {
@@ -72,10 +78,17 @@ func NewPublisher(md QuoteSource, cfg *config.Config, clk clock.Clock, log *slog
 // SetConfig updates the batching settings; writers pick them up on their
 // next send.
 func (p *Publisher) SetConfig(cfg *config.Config) {
-	s := &batchingSettings{global: cfg.MarketData.Batching, sessions: map[config.SessionKey]config.Batching{}}
+	s := &batchingSettings{
+		global: cfg.MarketData.Batching, sessions: map[config.SessionKey]config.Batching{},
+		bothSides: cfg.MarketData.SendBothSides, sessionBothSides: map[config.SessionKey]bool{},
+		monitor: config.SessionKey{SenderCompID: cfg.Server.Monitor.SenderCompID, TargetCompID: cfg.Server.Monitor.TargetCompID},
+	}
 	for _, cs := range cfg.Server.FIX.Sessions {
 		if cs.MarketData != nil && cs.MarketData.Batching != nil {
 			s.sessions[cs.Key()] = mergeBatching(s.global, *cs.MarketData.Batching)
+		}
+		if cs.MarketData != nil && cs.MarketData.SendBothSides != nil {
+			s.sessionBothSides[cs.Key()] = *cs.MarketData.SendBothSides
 		}
 	}
 	// The UI gateway subscribes per symbol and is never batched, so the
@@ -118,6 +131,14 @@ func (p *Publisher) batchingFor(id quickfix.SessionID) config.Batching {
 		return b
 	}
 	return s.global
+}
+
+func (p *Publisher) bothSidesFor(id quickfix.SessionID) bool {
+	s := p.batching.Load()
+	if b, ok := s.sessionBothSides[config.SessionKey{SenderCompID: id.SenderCompID, TargetCompID: id.TargetCompID}]; ok {
+		return b
+	}
+	return s.bothSides
 }
 
 // Conflated returns the number of ticks dropped for a session because a
@@ -215,6 +236,9 @@ func (p *Publisher) HandleRequest(m marketdatarequest.MarketDataRequest, id quic
 	v, rerr := requestView(m)
 	if rerr != nil {
 		return rerr
+	}
+	if p.bothSidesFor(id) {
+		v.bid, v.offer = true, true
 	}
 	if !v.bid && !v.offer {
 		return reject(enum.MDReqRejReason_UNSUPPENTRY, "only MDEntryType 0 (bid) and 1 (offer) are supported")
@@ -343,4 +367,75 @@ func requestSymbols(m marketdatarequest.MarketDataRequest) ([]string, quickfix.M
 		}
 	}
 	return symbols, nil
+}
+
+// QuoteCancelResult reports what a QuoteCancel did.
+type QuoteCancelResult struct {
+	Sessions      []string `json:"sessions"`
+	Subscriptions int      `json:"subscriptions_canceled"`
+}
+
+// QuoteCancel simulates the LP withdrawing quotes (runtime command): it
+// drops the subscriptions to symbols (all symbols when empty) and sends
+// each affected session a QuoteCancel (Z) with QuoteCancelType 1 (listed
+// securities) or 4 (all quotes). The client has to subscribe again to get
+// prices. only, when set, limits it to one session; the monitor session
+// is never included.
+func (p *Publisher) QuoteCancel(symbols []string, only *quickfix.SessionID) QuoteCancelResult {
+	cancelAll := len(symbols) == 0
+	want := map[string]bool{}
+	for _, s := range symbols {
+		want[s] = true
+	}
+	monitor := p.batching.Load().monitor
+	res := QuoteCancelResult{Sessions: []string{}}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.quoteCancelSeq++
+	for id, s := range p.sessions {
+		if only != nil && id != *only {
+			continue
+		}
+		if (config.SessionKey{SenderCompID: id.SenderCompID, TargetCompID: id.TargetCompID}) == monitor {
+			continue
+		}
+		canceled := map[string]bool{}
+		for reqID, sub := range s.subs {
+			var keep []string
+			for _, sym := range sub.symbols {
+				if cancelAll || want[sym] {
+					delete(p.bySymbol[sym], sub)
+					if len(p.bySymbol[sym]) == 0 {
+						delete(p.bySymbol, sym)
+					}
+					metrics.MDSubscriptions.WithLabelValues(sym).Dec()
+					canceled[sym] = true
+				} else {
+					keep = append(keep, sym)
+				}
+			}
+			if len(keep) == 0 {
+				sub.active.Store(false)
+				delete(s.subs, reqID)
+				res.Subscriptions++
+			} else if len(keep) != len(sub.symbols) {
+				sub.symbols = keep
+			}
+		}
+		if len(canceled) == 0 {
+			continue
+		}
+		var syms []string
+		if !cancelAll {
+			for sym := range canceled {
+				syms = append(syms, sym)
+			}
+			slices.Sort(syms)
+		}
+		s.w.enqueueMsg(quoteCancelMsg(fmt.Sprintf("QC-%d", p.quoteCancelSeq), syms))
+		res.Sessions = append(res.Sessions, id.String())
+	}
+	slices.Sort(res.Sessions)
+	return res
 }

@@ -28,3 +28,6 @@
 /fix/tag/
 /fix/enum/
 /web/test-results-config-path
+
+# Test certificates (go run ./cmd/gencerts)
+/certs/

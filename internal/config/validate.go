@@ -82,6 +82,22 @@ func validate(c *Config) []FieldError {
 		}
 	}
 
+	if t := c.Server.FIX.TLS; t != nil {
+		for path, f := range map[string]string{"cert_file": t.CertFile, "key_file": t.KeyFile, "client_ca_file": t.ClientCAFile} {
+			if f == "" {
+				continue
+			}
+			if fh, err := os.Open(f); err != nil {
+				add("server.fix.tls."+path, "not readable: %v", err)
+			} else {
+				fh.Close()
+			}
+		}
+		if t.ClientAuth == "require" && t.ClientCAFile == "" {
+			add("server.fix.tls.client_ca_file", "client_auth require needs client_ca_file")
+		}
+	}
+
 	sessions := map[SessionKey]int{}
 	for i, s := range c.Server.FIX.Sessions {
 		p := fmt.Sprintf("server.fix.sessions[%d]", i)

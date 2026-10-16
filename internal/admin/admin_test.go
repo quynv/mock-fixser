@@ -92,7 +92,9 @@ func newEnv(t *testing.T) *env {
 		"index.html":      {Data: []byte("<html>mockfix ui</html>")},
 		"assets/app-1.js": {Data: []byte("console.log(1)")},
 	}
-	srv := httptest.NewServer(Handler(Deps{Store: store, Market: md, Orders: orders, Server: fs, UI: ui, Log: log}))
+	pub := marketdata.NewPublisher(md, cfg, clock.Real{}, log, func(*quickfix.Message, quickfix.SessionID) error { return nil })
+	t.Cleanup(pub.Close)
+	srv := httptest.NewServer(Handler(Deps{Store: store, Market: md, Quotes: pub, Orders: orders, Server: fs, UI: ui, Log: log}))
 	t.Cleanup(srv.Close)
 	return &env{t: t, srv: srv, store: store, path: path}
 }
@@ -250,6 +252,14 @@ func TestRuntimeCommands(t *testing.T) {
 	e.status("POST", "/api/symbols/EURUSD/price", `{"mid":5}`, nil, http.StatusBadRequest)
 	e.status("POST", "/api/symbols/EURUSD/spike", `{"percent":1,"direction":"sideways"}`, nil, http.StatusBadRequest)
 	e.status("POST", "/api/symbols/NOPE/pause", "", nil, http.StatusNotFound)
+	var qc marketdata.QuoteCancelResult
+	if r := e.do("POST", "/api/quote-cancel", `{"symbols":["EURUSD"]}`, nil, &qc); r.StatusCode != 200 || len(qc.Sessions) != 0 {
+		t.Fatalf("quote-cancel with no subscribers: %d %+v", r.StatusCode, qc)
+	}
+	if r := e.do("POST", "/api/symbols/EURUSD/quote-cancel", "", nil, &qc); r.StatusCode != 200 {
+		t.Fatalf("symbol quote-cancel: %d", r.StatusCode)
+	}
+	e.status("POST", "/api/quote-cancel", `{"session":"NOPE"}`, nil, http.StatusNotFound)
 	if e.store.Current().Version != 4 {
 		t.Fatal("runtime commands changed the config")
 	}

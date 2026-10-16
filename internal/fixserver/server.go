@@ -82,6 +82,14 @@ func New(cfg *config.Config, log *slog.Logger) (*Server, error) {
 	for id := range cs.SessionSettings() {
 		s.static = append(s.static, id)
 	}
+	if cfg.Server.FIX.TLS != nil {
+		tc, err := tlsConfig(cfg.Server.FIX.TLS)
+		if err != nil {
+			s.unregisterStatic()
+			return nil, err
+		}
+		s.client.SetTLSConfig(tc)
+	}
 
 	if cfg.Server.Monitor.Enabled {
 		ms, err := monitorSettings(cfg.Server.FIX, cfg.Server.Monitor)

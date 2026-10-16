@@ -32,6 +32,8 @@ import (
 type Deps struct {
 	Store  *config.Store
 	Market *marketdata.Engine
+	// Quotes runs QuoteCancel (the market data publisher).
+	Quotes *marketdata.Publisher
 	Orders *order.Engine
 	Server *fixserver.Server
 	// WS serves /ws (the FIX gateway hub); nil disables it.
@@ -66,6 +68,8 @@ func Handler(d Deps) http.Handler {
 	mux.HandleFunc("POST /api/symbols/{symbol}/resume", a.resume)
 	mux.HandleFunc("POST /api/symbols/{symbol}/price", a.setPrice)
 	mux.HandleFunc("POST /api/symbols/{symbol}/spike", a.spike)
+	mux.HandleFunc("POST /api/symbols/{symbol}/quote-cancel", a.quoteCancelSymbol)
+	mux.HandleFunc("POST /api/quote-cancel", a.quoteCancel)
 
 	mux.HandleFunc("GET /api/rules", a.listRules)
 	mux.HandleFunc("POST /api/rules", a.addRule)
@@ -476,6 +480,43 @@ func (a *api) spike(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.runtime(w, r, func(s string) error { return a.Market.Spike(s, body.Percent, body.Direction == "up") })
+}
+
+// quoteCancel sends QuoteCancel (Z) and drops the subscriptions:
+// {"symbols": [...]} (empty or absent: all quotes), optional "session".
+func (a *api) quoteCancel(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Symbols []string `json:"symbols"`
+		Session string   `json:"session"`
+	}
+	if r.ContentLength != 0 {
+		if err := decodeJSON(r, &body); err != nil {
+			writeErr(w, err)
+			return
+		}
+	}
+	a.runQuoteCancel(w, body.Symbols, body.Session)
+}
+
+func (a *api) quoteCancelSymbol(w http.ResponseWriter, r *http.Request) {
+	a.runQuoteCancel(w, []string{r.PathValue("symbol")}, "")
+}
+
+func (a *api) runQuoteCancel(w http.ResponseWriter, symbols []string, session string) {
+	if a.Quotes == nil {
+		writeError(w, http.StatusServiceUnavailable, "unavailable", "market data publisher not available", nil)
+		return
+	}
+	var only *quickfix.SessionID
+	if session != "" {
+		id, ok := a.sessionByID(session)
+		if !ok {
+			writeErr(w, config.ErrNotFound)
+			return
+		}
+		only = &id
+	}
+	writeJSON(w, http.StatusOK, a.Quotes.QuoteCancel(symbols, only))
 }
 
 func (a *api) listRules(w http.ResponseWriter, _ *http.Request) {

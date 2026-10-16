@@ -29,6 +29,8 @@ type Quote struct {
 	Decimals int32
 	// FullRefresh is set for update_mode: snapshot (send W, not X).
 	FullRefresh bool
+	// QuoteCondition is the symbol's quote_condition (tag 276), if any.
+	QuoteCondition string
 }
 
 // Generator produces quotes for one symbol. It is not safe for concurrent
@@ -132,16 +134,17 @@ func (g *Generator) book(bid, ask float64, now time.Time) Quote {
 	tick := g.cfg.TickSize
 	n := max(g.cfg.DepthLevels, 1)
 	q := Quote{
-		Symbol:      g.cfg.Symbol,
-		Bid:         bid,
-		Ask:         ask,
-		Mid:         roundTick((bid+ask)/2, tick/2),
-		Bids:        make([]Level, n),
-		Asks:        make([]Level, n),
-		Seq:         g.seq,
-		Time:        now,
-		Decimals:    g.decimals,
-		FullRefresh: g.cfg.UpdateMode == "snapshot",
+		Symbol:         g.cfg.Symbol,
+		Bid:            bid,
+		Ask:            ask,
+		Mid:            roundTick((bid+ask)/2, tick/2),
+		Bids:           make([]Level, n),
+		Asks:           make([]Level, n),
+		Seq:            g.seq,
+		Time:           now,
+		Decimals:       g.decimals,
+		FullRefresh:    g.cfg.UpdateMode == "snapshot",
+		QuoteCondition: g.cfg.QuoteCondition,
 	}
 	for i := range n {
 		q.Bids[i] = Level{Px: roundTick(bid-float64(i)*tick, tick), Size: g.levelSize()}

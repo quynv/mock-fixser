@@ -51,7 +51,19 @@ type FIXServer struct {
 	Listen         string    `yaml:"listen" json:"listen"`
 	Version        string    `yaml:"version" json:"version"`
 	DataDictionary string    `yaml:"data_dictionary" json:"data_dictionary"`
+	TLS            *TLS      `yaml:"tls,omitempty" json:"tls,omitempty"`
 	Sessions       []Session `yaml:"sessions" json:"sessions"`
+}
+
+// TLS makes the client acceptor accept TLS connections only. The monitor
+// acceptor stays plain TCP on loopback.
+type TLS struct {
+	CertFile string `yaml:"cert_file" json:"cert_file"`
+	KeyFile  string `yaml:"key_file" json:"key_file"`
+	// ClientAuth: none (default), request (ask for a client certificate,
+	// accept any) or require (verify it against ClientCAFile).
+	ClientAuth   string `yaml:"client_auth,omitempty" json:"client_auth,omitempty"`
+	ClientCAFile string `yaml:"client_ca_file,omitempty" json:"client_ca_file,omitempty"`
 }
 
 type Session struct {
@@ -99,7 +111,8 @@ type HeartbeatMiss struct {
 // SessionMarketData overrides market_data settings for one session. Unset
 // fields fall back to the global market_data section.
 type SessionMarketData struct {
-	Batching *BatchingOverride `yaml:"batching,omitempty" json:"batching,omitempty"`
+	Batching      *BatchingOverride `yaml:"batching,omitempty" json:"batching,omitempty"`
+	SendBothSides *bool             `yaml:"send_both_sides,omitempty" json:"send_both_sides,omitempty"`
 }
 
 type Monitor struct {
@@ -120,6 +133,9 @@ type HTTP struct {
 
 type MarketData struct {
 	Batching Batching `yaml:"batching" json:"batching"`
+	// SendBothSides sends bid and offer entries whatever MDEntryTypes the
+	// request lists, as some LPs (oneZero) do.
+	SendBothSides bool `yaml:"send_both_sides,omitempty" json:"send_both_sides,omitempty"`
 }
 
 type Batching struct {
@@ -143,22 +159,25 @@ type BatchingOverride struct {
 }
 
 type Symbol struct {
-	Symbol       string    `yaml:"symbol" json:"symbol"`
-	InitialPrice float64   `yaml:"initial_price" json:"initial_price"`
-	Min          float64   `yaml:"min" json:"min"`
-	Max          float64   `yaml:"max" json:"max"`
-	TickSize     float64   `yaml:"tick_size" json:"tick_size"`
-	Model        string    `yaml:"model" json:"model"`
-	Volatility   float64   `yaml:"volatility,omitempty" json:"volatility,omitempty"`
-	Drift        float64   `yaml:"drift,omitempty" json:"drift,omitempty"`
-	Sine         *Sine     `yaml:"sine,omitempty" json:"sine,omitempty"`
-	Replay       *Replay   `yaml:"replay,omitempty" json:"replay,omitempty"`
-	Speed        Speed     `yaml:"speed" json:"speed"`
-	Spread       float64   `yaml:"spread" json:"spread"`
-	DepthLevels  int       `yaml:"depth_levels" json:"depth_levels"`
-	UpdateMode   string    `yaml:"update_mode" json:"update_mode"`
-	Slippage     *Slippage `yaml:"slippage,omitempty" json:"slippage,omitempty"`
-	Seed         *int64    `yaml:"seed,omitempty" json:"seed,omitempty"`
+	Symbol       string  `yaml:"symbol" json:"symbol"`
+	InitialPrice float64 `yaml:"initial_price" json:"initial_price"`
+	Min          float64 `yaml:"min" json:"min"`
+	Max          float64 `yaml:"max" json:"max"`
+	TickSize     float64 `yaml:"tick_size" json:"tick_size"`
+	Model        string  `yaml:"model" json:"model"`
+	Volatility   float64 `yaml:"volatility,omitempty" json:"volatility,omitempty"`
+	Drift        float64 `yaml:"drift,omitempty" json:"drift,omitempty"`
+	Sine         *Sine   `yaml:"sine,omitempty" json:"sine,omitempty"`
+	Replay       *Replay `yaml:"replay,omitempty" json:"replay,omitempty"`
+	Speed        Speed   `yaml:"speed" json:"speed"`
+	Spread       float64 `yaml:"spread" json:"spread"`
+	DepthLevels  int     `yaml:"depth_levels" json:"depth_levels"`
+	UpdateMode   string  `yaml:"update_mode" json:"update_mode"`
+	// QuoteCondition, when set, is sent as tag 276 on every bid and offer
+	// entry, e.g. A (open, tradable) or B (closed).
+	QuoteCondition string    `yaml:"quote_condition,omitempty" json:"quote_condition,omitempty"`
+	Slippage       *Slippage `yaml:"slippage,omitempty" json:"slippage,omitempty"`
+	Seed           *int64    `yaml:"seed,omitempty" json:"seed,omitempty"`
 }
 
 type Sine struct {

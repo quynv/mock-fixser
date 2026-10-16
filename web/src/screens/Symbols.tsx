@@ -50,6 +50,11 @@ export function Symbols({ selected }: { selected?: string }) {
           ))}
         </ul>
         <div className="row" style={{ marginTop: 8 }}>
+          <button className="runtime" title="Send QuoteCancel (Z) for all quotes to every subscribed client" onClick={() => void quoteCancel([])}>
+            ⚡ Cancel all quotes
+          </button>
+        </div>
+        <div className="row" style={{ marginTop: 8 }}>
           <input placeholder="new symbol" value={adding} onChange={(e) => setAdding(e.target.value)} onKeyDown={(e) => e.key === "Enter" && add()} />
           <button onClick={add}>Add</button>
         </div>
@@ -136,6 +141,9 @@ function SymbolEditor({ sym, index, runtime, applied }: { sym: Sym; index: numbe
           </Field>
           <Field label="Update mode" path={`${p}.update_mode`}>
             <Select value={sym.update_mode ?? ""} allowEmpty="incremental (default)" options={["incremental", "snapshot"]} onChange={(v) => set(["update_mode"], v)} />
+          </Field>
+          <Field label="Quote condition (276)" path={`${p}.quote_condition`} hint="e.g. A open, B closed; empty: not sent">
+            <Input value={sym.quote_condition} placeholder="not sent" onCommit={(v) => set(["quote_condition"], v.trim().toUpperCase())} />
           </Field>
           <Field label="Seed" path={`${p}.seed`} hint="empty: random each start">
             <Input type="number" value={sym.seed} onCommit={(v) => set(["seed"], toNum(v))} />
@@ -263,6 +271,21 @@ function SymbolEditor({ sym, index, runtime, applied }: { sym: Sym; index: numbe
   );
 }
 
+/** QuoteCancel (Z): the clients must subscribe again to get prices. */
+async function quoteCancel(symbols: string[]) {
+  try {
+    const r = await api.quoteCancel(symbols);
+    notify(
+      r.sessions.length ? "ok" : "info",
+      r.sessions.length
+        ? `QuoteCancel sent to ${r.sessions.length} session(s): ${r.sessions.join(", ")}`
+        : "QuoteCancel: no client session is subscribed",
+    );
+  } catch (e) {
+    notify("error", e instanceof HttpError ? e.body.message : String(e));
+  }
+}
+
 /** Runtime commands: immediate, not saved to the YAML (sections 6.5, 11.5). */
 function RuntimeCommands({ symbol, runtime }: { symbol: string; runtime?: SymbolState }) {
   const [price, setPrice] = useState("");
@@ -302,6 +325,9 @@ function RuntimeCommands({ symbol, runtime }: { symbol: string; runtime?: Symbol
         </button>
         <button className="runtime" onClick={() => void run(() => api.spike(symbol, Number(pct), "down"), `spike −${pct}%`)}>
           Spike ↓
+        </button>
+        <button className="runtime" title="Send QuoteCancel (Z) for this symbol and drop its subscriptions" onClick={() => void quoteCancel([symbol])}>
+          Quote cancel
         </button>
       </div>
     </div>

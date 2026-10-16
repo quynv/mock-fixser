@@ -9,6 +9,7 @@ import (
 	"github.com/quynv/mock-fixser/fix/fix44/marketdataincrementalrefresh"
 	"github.com/quynv/mock-fixser/fix/fix44/marketdatarequestreject"
 	"github.com/quynv/mock-fixser/fix/fix44/marketdatasnapshotfullrefresh"
+	"github.com/quynv/mock-fixser/fix/fix44/quotecancel"
 )
 
 // view selects what a subscription receives from a quote.
@@ -56,6 +57,9 @@ func snapshotMsg(mdReqID string, q Quote, v view) *quickfix.Message {
 			e.SetMDEntryPx(px(levels[i].Px, q.Decimals), q.Decimals)
 			e.SetMDEntrySize(decimal.NewFromFloat(levels[i].Size), 0)
 			e.SetMDEntryPositionNo(i + 1)
+			if q.QuoteCondition != "" {
+				e.SetQuoteCondition(enum.QuoteCondition(q.QuoteCondition))
+			}
 		}
 	}
 	if v.bid {
@@ -93,6 +97,9 @@ func incrementalMsg(mdReqID string, items []incItem) *quickfix.Message {
 				e.SetMDEntryPx(px(levels[i].Px, it.q.Decimals), it.q.Decimals)
 				e.SetMDEntrySize(decimal.NewFromFloat(levels[i].Size), 0)
 				e.SetMDEntryPositionNo(i + 1)
+				if it.q.QuoteCondition != "" {
+					e.SetQuoteCondition(enum.QuoteCondition(it.q.QuoteCondition))
+				}
 			}
 		}
 		if it.v.bid {
@@ -111,6 +118,24 @@ func rejectMsg(mdReqID string, reason enum.MDReqRejReason, text string) *quickfi
 	m.SetMDReqRejReason(reason)
 	if text != "" {
 		m.SetText(text)
+	}
+	return m.ToMessage()
+}
+
+// quoteCancelMsg builds QuoteCancel (Z): type 4 (all quotes) without
+// symbols, type 1 (listed securities) with them.
+func quoteCancelMsg(quoteID string, symbols []string) *quickfix.Message {
+	typ := enum.QuoteCancelType_CXLALL
+	if len(symbols) > 0 {
+		typ = enum.QuoteCancelType_CXLSYM
+	}
+	m := quotecancel.New(field.NewQuoteID(quoteID), field.NewQuoteCancelType(typ))
+	if len(symbols) > 0 {
+		g := quotecancel.NewNoQuoteEntriesRepeatingGroup()
+		for _, s := range symbols {
+			g.Add().SetSymbol(s)
+		}
+		m.SetNoQuoteEntries(g)
 	}
 	return m.ToMessage()
 }

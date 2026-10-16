@@ -32,6 +32,7 @@ func Compare(old, new *Config) Diff {
 	check("server.fix.listen", of.Listen, nf.Listen, true)
 	check("server.fix.version", of.Version, nf.Version, true)
 	check("server.fix.data_dictionary", of.DataDictionary, nf.DataDictionary, true)
+	check("server.fix.tls", of.TLS, nf.TLS, true)
 	check("server.fix.sessions", of.Sessions, nf.Sessions, false)
 
 	om, nm := old.Server.Monitor, new.Server.Monitor

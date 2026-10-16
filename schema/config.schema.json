@@ -20,6 +20,17 @@
             "listen": { "$ref": "#/$defs/hostPort" },
             "version": { "enum": ["FIX.4.4"] },
             "data_dictionary": { "type": "string", "minLength": 1 },
+            "tls": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["cert_file", "key_file"],
+              "properties": {
+                "cert_file": { "type": "string", "minLength": 1 },
+                "key_file": { "type": "string", "minLength": 1 },
+                "client_auth": { "enum": ["none", "request", "require"] },
+                "client_ca_file": { "type": "string", "minLength": 1 }
+              }
+            },
             "sessions": {
               "type": "array",
               "items": { "$ref": "#/$defs/session" }
@@ -54,7 +65,8 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "batching": { "$ref": "#/$defs/batching" }
+        "batching": { "$ref": "#/$defs/batching" },
+        "send_both_sides": { "type": "boolean" }
       }
     },
     "symbols": {
@@ -148,7 +160,8 @@
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "batching": { "$ref": "#/$defs/batching" }
+            "batching": { "$ref": "#/$defs/batching" },
+            "send_both_sides": { "type": "boolean" }
           }
         }
       }
@@ -209,6 +222,7 @@
         "spread": { "type": "number", "minimum": 0 },
         "depth_levels": { "type": "integer", "minimum": 1 },
         "update_mode": { "enum": ["incremental", "snapshot"] },
+        "quote_condition": { "type": "string", "pattern": "^[0-9A-Za-z]+( [0-9A-Za-z]+)*$" },
         "slippage": { "$ref": "#/$defs/slippage" },
         "seed": { "type": "integer" }
       }

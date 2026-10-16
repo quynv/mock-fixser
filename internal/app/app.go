@@ -151,7 +151,7 @@ func (a *App) Run(ctx context.Context) error {
 		}
 		addr := ln.Addr().String()
 		a.httpAddr.Store(&addr)
-		deps := admin.Deps{Store: a.store, Market: a.engine, Orders: a.orders, Server: a.srv, UI: web.FS(), Pprof: a.opts.Pprof, Log: a.log}
+		deps := admin.Deps{Store: a.store, Market: a.engine, Quotes: a.pub, Orders: a.orders, Server: a.srv, UI: web.FS(), Pprof: a.opts.Pprof, Log: a.log}
 		if a.gw != nil {
 			deps.WS = a.gw
 		}
