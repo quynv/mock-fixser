@@ -2,11 +2,12 @@
 
 A simulated FIX 4.4 server written in Go. It streams prices for configured symbols, accepts orders and answers with ExecutionReports according to predefined rules. See [the design document](./docs/Design%20Document.md) for the full specification.
 
-Status: phase 4 (monitor, gateway, REST). Everything of phases 1–3 plus the Admin REST API, runtime commands, Prometheus metrics, the U1 log mirror and the FIX gateway with its WebSocket hub at `/ws`. The Web UI comes in phase 5.
+Status: phase 5 (Web UI). Everything of phases 1–4 plus the Web UI at `http://localhost:8080/`, embedded in the binary.
 
 ## Requirements
 
 - Go 1.26.9 (pinned in `.go-version` for goenv)
+- Node.js 22+ and npm, to build the Web UI (`make build-go` builds without it)
 - Docker (optional)
 
 ## Layout
@@ -29,6 +30,8 @@ Status: phase 4 (monitor, gateway, REST). Everything of phases 1–3 plus the Ad
 | `configs/mock.yaml` | Sample config (design doc, section 9.1) |
 | `data/` | Replay files, e.g. `data/aapl.csv` |
 | `spec/FIX44.xml` | quickfixgo FIX44 dictionary plus U1 MirrorLog, U2 MonitorControl and tags 5001–5006 |
+| `web/` | React + TypeScript Web UI (Vite); `web/dist` is embedded with `go:embed` |
+| `cmd/webdict/` | Generates the browser's FIX dictionary from `spec/FIX44.xml` |
 | `fix/` | Go packages generated from `spec/FIX44.xml` (`fix44`, `field`, `tag`, `enum`); not committed, created by `make gen` |
 
 ## Commands
@@ -36,11 +39,16 @@ Status: phase 4 (monitor, gateway, REST). Everything of phases 1–3 plus the Ad
 The FIX packages in `fix/` are generated, not committed. `make build`, `make test` and `make vet` generate them first (only when `spec/FIX44.xml` changed). Without make, run `go generate ./fix` once after cloning.
 
 ```sh
-make gen     # generate fix/ from spec/FIX44.xml
-make build   # static binary in bin/mockfix
-make test    # go test -race ./...
-make docker  # build the mockfix image
+make gen        # generate fix/ from spec/FIX44.xml
+make build      # build the Web UI, then a static binary in bin/mockfix with the UI embedded
+make build-go   # binary only (no Node.js), with whatever is in web/dist
+make test       # go test -race ./...
+make test-web   # UI unit tests (Vitest)
+make e2e        # Playwright test of the Apply flow against a real mockfix
+make docker     # build the mockfix image
 ```
+
+For UI development, run mockfix, then `cd web && npm run dev`: Vite serves the UI with hot reload and proxies `/api`, `/ws` and `/metrics` to `http://localhost:8080` (override with `MOCKFIX_URL`). Before the first `npm run dev`, generate the dictionary with `make web/src/fix/dict.json`. The first `make e2e` needs `cd web && npx playwright install chromium`.
 
 Run with `bin/mockfix --config configs/mock.yaml`. Flags: `--log-level`, `--no-ui`, `--version`.
 
@@ -132,3 +140,14 @@ The HTTP server (`server.http.listen`, default `:8080`) serves the REST API unde
 Partial edits (symbols, rules) change only that part of the YAML file, keeping comments elsewhere, and go through the same validate-and-swap path, so each creates a new version; `If-Match` is optional for them. Runtime commands take effect at once and are not written to the YAML.
 
 `/ws` carries raw FIX, one message per text frame with SOH replaced by `|`. The browser may send only `35=V|262=<id>|263=1|55=<symbol>` (subscribe; several `55` allowed), `35=V|262=<id>|263=2` (unsubscribe) and `35=U2|5005=log|5006=on|off` (U1 log mirror, off by default). Tabs watching the same symbol share one upstream subscription, and a new tab first receives the last `history_ticks` frames. Drop copies (8, N) go to every tab. A tab that cannot keep up is closed with code 1008.
+
+## Web UI
+
+Screens: Dashboard, Symbols, Order rules, Sessions, Orders, FIX log and YAML. All realtime data reaches the browser over FIX through `/ws`, so the UI sees exactly what clients receive.
+
+Edits only change a draft; nothing reaches the server until **Apply**. The draft is the YAML text itself: the forms change it through a YAML document, so comments and layout in `configs/mock.yaml` survive, and the YAML screen edits the same text in Monaco. The server validates the draft as you type; errors show next to the field and as editor markers, and Apply returns them too. If someone else applies a version meanwhile, a banner offers to reload instead of overwriting. Runtime commands (pause, set price, spike) are styled apart and are not saved to the YAML.
+
+- **Symbols**: live chart (Lightweight Charts) with candles of the mid at 1s, 5s or 1m, bid and ask lines, dashed min/max and markers at fill prices from the drop copies; an editor for every symbol parameter; a browser-side preview of the edited price model (shape only, not the server's exact numbers).
+- **Order rules**: drag to reorder priorities, conditions as chips, action chains as timelines with total latency, `default_action`, list rules, and a rule tester that runs a sample order against the draft.
+- **FIX log**: the U1 mirror (turned on while the screen is open), filters by session, direction and MsgType, search, pause, and a tag-by-tag view with field and enum names.
+- **YAML**: the draft in Monaco, a diff against the running config, and version history with rollback.

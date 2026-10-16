@@ -22,6 +22,7 @@ import (
 	"github.com/quynv/mock-fixser/internal/monitor"
 	"github.com/quynv/mock-fixser/internal/order"
 	"github.com/quynv/mock-fixser/internal/sched"
+	"github.com/quynv/mock-fixser/web"
 )
 
 type Options struct {
@@ -142,7 +143,7 @@ func (a *App) Run(ctx context.Context) error {
 		}
 		addr := ln.Addr().String()
 		a.httpAddr.Store(&addr)
-		deps := admin.Deps{Store: a.store, Market: a.engine, Orders: a.orders, Server: a.srv, Log: a.log}
+		deps := admin.Deps{Store: a.store, Market: a.engine, Orders: a.orders, Server: a.srv, UI: web.FS(), Log: a.log}
 		if a.gw != nil {
 			deps.WS = a.gw
 		}

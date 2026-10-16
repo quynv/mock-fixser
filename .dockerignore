@@ -7,3 +7,6 @@ fix/fix44
 fix/field
 fix/tag
 fix/enum
+web/dist/assets
+web/test-results
+web/playwright-report

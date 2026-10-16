@@ -9,7 +9,11 @@
 
 # Web
 /web/node_modules/
-/web/dist/
+/web/dist/*
+!/web/dist/.gitkeep
+/web/src/fix/dict.json
+/web/test-results/
+/web/playwright-report/
 
 # Local tooling
 .claude/
@@ -23,3 +27,4 @@
 /fix/field/
 /fix/tag/
 /fix/enum/
+/web/test-results-config-path

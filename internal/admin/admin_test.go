@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/fstest"
 
 	"github.com/quickfixgo/quickfix"
 
@@ -87,7 +88,11 @@ func newEnv(t *testing.T) *env {
 			t.Error(err)
 		}
 	})
-	srv := httptest.NewServer(Handler(Deps{Store: store, Market: md, Orders: orders, Server: fs, Log: log}))
+	ui := fstest.MapFS{
+		"index.html":      {Data: []byte("<html>mockfix ui</html>")},
+		"assets/app-1.js": {Data: []byte("console.log(1)")},
+	}
+	srv := httptest.NewServer(Handler(Deps{Store: store, Market: md, Orders: orders, Server: fs, UI: ui, Log: log}))
 	t.Cleanup(srv.Close)
 	return &env{t: t, srv: srv, store: store, path: path}
 }
@@ -318,4 +323,31 @@ func TestSessionsAndOrders(t *testing.T) {
 		t.Fatalf("/metrics %d", res.StatusCode)
 	}
 	e.status("GET", "/api/nope", "", nil, http.StatusNotFound)
+}
+
+func TestServesUI(t *testing.T) {
+	e := newEnv(t)
+	for _, path := range []string{"/", "/symbols/EURUSD", "/index.html"} {
+		res := e.do("GET", path, "", nil, nil)
+		if res.StatusCode != 200 || res.Header.Get("Cache-Control") != "no-cache" {
+			t.Fatalf("GET %s: %d %q", path, res.StatusCode, res.Header.Get("Cache-Control"))
+		}
+	}
+	res := e.do("GET", "/assets/app-1.js", "", nil, nil)
+	if res.StatusCode != 200 || !strings.Contains(res.Header.Get("Cache-Control"), "immutable") {
+		t.Fatalf("asset: %d %q", res.StatusCode, res.Header.Get("Cache-Control"))
+	}
+	// The API is not swallowed by the UI fallback.
+	e.status("GET", "/api/nope", "", nil, http.StatusNotFound)
+	if res := e.do("GET", "/api/sessions", "", nil, nil); res.StatusCode != 200 {
+		t.Fatalf("/api/sessions: %d", res.StatusCode)
+	}
+}
+
+func TestUINotBuiltPage(t *testing.T) {
+	res := httptest.NewRecorder()
+	spa(fstest.MapFS{".gitkeep": {}}).ServeHTTP(res, httptest.NewRequest("GET", "/", nil))
+	if res.Code != 200 || !strings.Contains(res.Body.String(), "make web") {
+		t.Fatalf("not-built page: %d %s", res.Code, res.Body.String())
+	}
 }

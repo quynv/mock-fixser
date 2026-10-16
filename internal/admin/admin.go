@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"slices"
@@ -33,7 +34,9 @@ type Deps struct {
 	Orders *order.Engine
 	Server *fixserver.Server
 	// WS serves /ws (the FIX gateway hub); nil disables it.
-	WS  http.Handler
+	WS http.Handler
+	// UI holds the built Web UI served at /; nil disables it.
+	UI  fs.FS
 	Log *slog.Logger
 }
 
@@ -81,6 +84,10 @@ func Handler(d Deps) http.Handler {
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "no such endpoint", nil)
 	})
+	if d.UI != nil {
+		// No method in the pattern: "GET /" would conflict with "/api/".
+		mux.Handle("/", spa(d.UI))
+	}
 	return mux
 }
 
@@ -542,6 +549,8 @@ type testOrder struct {
 	InList      bool              `json:"in_list"`
 	ListID      string            `json:"list_id"`
 	ListSeqNo   int               `json:"list_seq_no"`
+	// YAML, when set, is a draft config to test instead of the running one.
+	YAML string `json:"yaml,omitempty"`
 }
 
 type testStep struct {
@@ -565,7 +574,16 @@ func (a *api) testRule(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	rs, errs := order.Compile(a.Store.Current())
+	cfg := a.Store.Current()
+	if t.YAML != "" {
+		draft, err := a.Store.Validate([]byte(t.YAML))
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		cfg = draft
+	}
+	rs, errs := order.Compile(cfg)
 	if len(errs) > 0 {
 		writeErr(w, &config.ValidationError{Errors: errs})
 		return
