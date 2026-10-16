@@ -19,10 +19,12 @@ import (
 
 	"github.com/quynv/mock-fixser/fix/enum"
 	"github.com/quynv/mock-fixser/fix/field"
+	"github.com/quynv/mock-fixser/fix/fix44/executionreport"
 	"github.com/quynv/mock-fixser/fix/fix44/marketdataincrementalrefresh"
 	"github.com/quynv/mock-fixser/fix/fix44/marketdatarequest"
 	"github.com/quynv/mock-fixser/fix/fix44/marketdatarequestreject"
 	"github.com/quynv/mock-fixser/fix/fix44/marketdatasnapshotfullrefresh"
+	"github.com/quynv/mock-fixser/fix/fix44/newordersingle"
 )
 
 func repoPath(rel string) string {
@@ -49,6 +51,16 @@ const symbolsYAML = `symbols:
 
 func writeConfig(t *testing.T, path string, port int, symbols string) {
 	t.Helper()
+	writeConfigMon(t, path, port, 0, symbols)
+}
+
+// writeConfigMon enables the monitor session with drop copy when monPort > 0.
+func writeConfigMon(t *testing.T, path string, port, monPort int, rest string) {
+	t.Helper()
+	mon := "    enabled: false"
+	if monPort > 0 {
+		mon = fmt.Sprintf("    enabled: true\n    listen: 127.0.0.1:%d\n    drop_copy: true", monPort)
+	}
 	y := fmt.Sprintf(`server:
   fix:
     listen: 127.0.0.1:%d
@@ -56,8 +68,8 @@ func writeConfig(t *testing.T, path string, port int, symbols string) {
     sessions:
       - { sender_comp_id: MOCKSRV, target_comp_id: CLIENT1 }
   monitor:
-    enabled: false
-%s`, port, repoPath("spec/FIX44.xml"), symbols)
+%s
+%s`, port, repoPath("spec/FIX44.xml"), mon, rest)
 	if err := os.WriteFile(path, []byte(y), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -87,10 +99,15 @@ func (c *client) FromApp(m *quickfix.Message, _ quickfix.SessionID) quickfix.Mes
 
 func dial(t *testing.T, port int) *client {
 	t.Helper()
+	return dialAs(t, port, "CLIENT1")
+}
+
+func dialAs(t *testing.T, port int, sender string) *client {
+	t.Helper()
 	settings := quickfix.NewSettings()
 	ss := quickfix.NewSessionSettings()
 	ss.Set(qconfig.BeginString, "FIX.4.4")
-	ss.Set(qconfig.SenderCompID, "CLIENT1")
+	ss.Set(qconfig.SenderCompID, sender)
 	ss.Set(qconfig.TargetCompID, "MOCKSRV")
 	ss.Set(qconfig.DataDictionary, repoPath("spec/FIX44.xml"))
 	ss.Set(qconfig.HeartBtInt, "30")
@@ -246,3 +263,51 @@ func (c *client) nextMD(t *testing.T) *quickfix.Message {
 }
 
 func mustDec(s string) decimal.Decimal { return decimal.RequireFromString(s) }
+
+func TestOrdersOverFIXWithDropCopy(t *testing.T) {
+	port, monPort := freePort(t), freePort(t)
+	path := filepath.Join(t.TempDir(), "mock.yaml")
+	writeConfigMon(t, path, port, monPort, symbolsYAML+`order_rules:
+  - name: partial-then-fill-aapl
+    priority: 10
+    match: { symbol: AAPL, side: BUY }
+    actions:
+      - { type: ack, delay_ms: 50 }
+      - { type: partial_fill, ratio: 0.4, delay_ms: 100 }
+      - { type: fill, delay_ms: 100 }
+`)
+	startApp(t, path)
+	c := dial(t, port)
+	mon := dialAs(t, monPort, "UI_MONITOR")
+
+	d := newordersingle.New(field.NewClOrdID("ORD-A"), field.NewSide(enum.Side_BUY),
+		field.NewTransactTime(time.Now()), field.NewOrdType(enum.OrdType_MARKET))
+	d.SetSymbol("AAPL")
+	d.SetOrderQty(decimal.NewFromInt(100), 0)
+	if err := quickfix.SendToTarget(d, c.id); err != nil {
+		t.Fatal(err)
+	}
+
+	want := []struct{ execType, cum string }{{"0", "0"}, {"F", "40"}, {"F", "100"}}
+	for _, w := range want {
+		er := executionreport.FromMessage(c.waitFor(t, "8", ""))
+		et, _ := er.GetExecType()
+		cum, _ := er.GetCumQty()
+		if string(et) != w.execType || cum.String() != w.cum {
+			t.Fatalf("ExecType %s CumQty %s, want %s %s", et, cum, w.execType, w.cum)
+		}
+		if et == enum.ExecType_TRADE {
+			px, _ := er.GetLastPx()
+			if px.LessThan(decimal.NewFromInt(200)) || px.GreaterThan(decimal.NewFromInt(260)) {
+				t.Fatalf("fill px %s outside the AAPL range", px)
+			}
+		}
+	}
+
+	for range want {
+		cp := mon.waitFor(t, "8", "")
+		if src, _ := cp.Body.GetString(5001); src != "FIX.4.4:MOCKSRV->CLIENT1" {
+			t.Fatalf("drop copy 5001 = %q", src)
+		}
+	}
+}

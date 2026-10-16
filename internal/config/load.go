@@ -61,6 +61,16 @@ func (e *ValidationError) Error() string {
 // Schema first, then the cross-field checks of section 9.2. Defaults are
 // applied before the cross-field checks. Errors are a *ValidationError.
 func Parse(data []byte) (*Config, error) {
+	return ParseWith(data)
+}
+
+// Validator is an extra check run after the built-in ones, for rules
+// owned by other packages (such as order rule compilation). Paths in the
+// returned errors get YAML line numbers.
+type Validator func(*Config) []FieldError
+
+// ParseWith is Parse plus extra validators.
+func ParseWith(data []byte, extra ...Validator) (*Config, error) {
 	var root yaml.Node
 	if err := yaml.Unmarshal(data, &root); err != nil {
 		return nil, &ValidationError{Errors: []FieldError{yamlSyntaxError(err)}}
@@ -80,7 +90,11 @@ func Parse(data []byte) (*Config, error) {
 	}
 	applyDefaults(cfg)
 
-	if errs := validate(cfg); len(errs) > 0 {
+	errs := validate(cfg)
+	for _, v := range extra {
+		errs = append(errs, v(cfg)...)
+	}
+	if len(errs) > 0 {
 		for i := range errs {
 			errs[i].Line = lineOf(doc, errs[i].Path)
 		}
@@ -90,12 +104,12 @@ func Parse(data []byte) (*Config, error) {
 }
 
 // Load reads and parses a config file.
-func Load(path string) (*Config, []byte, error) {
+func Load(path string, extra ...Validator) (*Config, []byte, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, nil, err
 	}
-	cfg, err := Parse(data)
+	cfg, err := ParseWith(data, extra...)
 	return cfg, data, err
 }
 

@@ -35,6 +35,8 @@ type Options struct {
 	// Debounce groups bursts of file events; default 200ms.
 	Debounce time.Duration
 	Logger   *slog.Logger
+	// Validators run on every load and change, after the built-in checks.
+	Validators []Validator
 }
 
 // Change is delivered to subscribers after a new config is swapped in.
@@ -96,7 +98,7 @@ func Open(path string, opts Options) (*Store, error) {
 		opts.Logger = slog.Default()
 	}
 
-	cfg, raw, err := Load(path)
+	cfg, raw, err := Load(path, opts.Validators...)
 	if err != nil {
 		return nil, err
 	}
@@ -144,7 +146,7 @@ func (s *Store) applyLocked(data []byte, o ApplyOptions) (*Result, error) {
 		return nil, fmt.Errorf("%w: running version is %d, not %d", ErrVersionConflict, cur.cfg.Version, o.IfVersion)
 	}
 
-	cfg, err := Parse(data)
+	cfg, err := ParseWith(data, s.opts.Validators...)
 	if err != nil {
 		s.log.Warn("config rejected", "source", o.Source, "error", err)
 		return nil, err

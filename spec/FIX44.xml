@@ -296,6 +296,7 @@
     <field name='MiscFeeType' required='N' />
     <field name='MiscFeeBasis' required='N' />
    </group>
+   <field name='MirrorSessionID' required='N' />
   </message>
   <message name='OrderCancelReject' msgcat='app' msgtype='9'>
    <field name='OrderID' required='Y' />

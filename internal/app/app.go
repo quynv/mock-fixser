@@ -12,6 +12,8 @@ import (
 	"github.com/quynv/mock-fixser/internal/config"
 	"github.com/quynv/mock-fixser/internal/fixserver"
 	"github.com/quynv/mock-fixser/internal/marketdata"
+	"github.com/quynv/mock-fixser/internal/order"
+	"github.com/quynv/mock-fixser/internal/sched"
 )
 
 type App struct {
@@ -20,12 +22,14 @@ type App struct {
 	srv    *fixserver.Server
 	engine *marketdata.Engine
 	pub    *marketdata.Publisher
+	sched  *sched.Scheduler
+	orders *order.Engine
 }
 
 // New loads the config and builds every component without starting them.
 // Config errors are a *config.ValidationError.
 func New(configPath string, log *slog.Logger) (*App, error) {
-	store, err := config.Open(configPath, config.Options{Logger: log})
+	store, err := config.Open(configPath, config.Options{Logger: log, Validators: []config.Validator{order.Validate}})
 	if err != nil {
 		return nil, err
 	}
@@ -40,8 +44,13 @@ func New(configPath string, log *slog.Logger) (*App, error) {
 		return nil, err
 	}
 	a.pub = marketdata.NewPublisher(a.engine, cfg, clk, log, nil)
+	a.sched = sched.New(clk)
+	if a.orders, err = order.NewEngine(cfg, a.engine, a.sched, log, nil); err != nil {
+		return nil, err
+	}
 
 	a.pub.Route(a.srv.Router())
+	a.orders.Route(a.srv.Router())
 	a.srv.OnLogout(a.pub.OnLogout)
 	store.Subscribe(a.srv.OnConfigChange)
 	store.Subscribe(func(c config.Change) {
@@ -49,6 +58,9 @@ func New(configPath string, log *slog.Logger) (*App, error) {
 			a.log.Error("apply symbols failed", "error", err)
 		}
 		a.pub.SetConfig(c.New)
+		if err := a.orders.SetConfig(c.New); err != nil {
+			a.log.Error("apply order rules failed", "error", err)
+		}
 	})
 	return a, nil
 }
@@ -69,10 +81,12 @@ func (a *App) Run(ctx context.Context) error {
 
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() error { return a.engine.Run(gctx) })
+	g.Go(func() error { return a.sched.Run(gctx) })
 	g.Go(func() error { return a.store.Watch(gctx) })
 
 	<-gctx.Done()
 	a.srv.Stop()
 	a.pub.Close()
+	a.orders.Close()
 	return g.Wait()
 }

@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"math"
 	"os"
-	"regexp"
 )
 
 // validate runs the cross-field checks the JSON Schema cannot express
@@ -69,7 +68,6 @@ func validate(c *Config) []FieldError {
 		} else {
 			priorities[r.Priority] = i
 		}
-		checkRegexes(p+".match", r.Match, add)
 	}
 
 	sessions := map[SessionKey]int{}
@@ -86,26 +84,6 @@ func validate(c *Config) []FieldError {
 	}
 
 	return errs
-}
-
-// checkRegexes compiles every { regex: "..." } found in a match section.
-func checkRegexes(path string, m map[string]any, add func(path, format string, args ...any)) {
-	for k, v := range m {
-		sub, ok := v.(map[string]any)
-		if !ok {
-			continue
-		}
-		if re, ok := sub["regex"]; ok {
-			s, isStr := re.(string)
-			if !isStr {
-				add(path+"."+k+".regex", "regex must be a string")
-			} else if _, err := regexp.Compile(s); err != nil {
-				add(path+"."+k+".regex", "invalid regex: %v", err)
-			}
-			continue
-		}
-		checkRegexes(path+"."+k, sub, add)
-	}
 }
 
 func isMultiple(v, step float64) bool {

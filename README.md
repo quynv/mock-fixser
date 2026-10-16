@@ -2,7 +2,7 @@
 
 A simulated FIX 4.4 server written in Go. It streams prices for configured symbols, accepts orders and answers with ExecutionReports according to predefined rules. See [the design document](./docs/Design%20Document.md) for the full specification.
 
-Status: phase 2 (market data). Clients log on, subscribe with MarketDataRequest (V) and receive W/X/Y with prices from the configured models; the config hot-reloads. Orders (D/F/G/H) are answered with BusinessMessageReject until phase 3.
+Status: phase 3 (orders), the MVP gate: mockfix runs entirely from YAML. Clients get market data (V/W/X/Y) and orders (D/F/G/H) answered by the rule engine, with drop copies to the monitor session. Order lists (E/K/M/q), the REST API and the Web UI come in later phases.
 
 ## Requirements
 
@@ -17,6 +17,8 @@ Status: phase 2 (market data). Clients log on, subscribe with MarketDataRequest 
 | `internal/config/` | Config model, YAML loading, validation, hot reload, versioning |
 | `internal/fixserver/` | Client and monitor acceptors, MsgType router |
 | `internal/marketdata/` | Price models, scheduler, V/W/X/Y subscriptions, conflating and batching publisher |
+| `internal/order/` | Order state, rule engine, action chains, slippage, D/F/G/H handlers, drop copy |
+| `internal/sched/` | Single-goroutine scheduler for delayed actions |
 | `internal/app/` | Wiring and startup/shutdown order; end-to-end tests |
 | `internal/clock/` | Real and fake clocks for time-based tests |
 | `schema/config.schema.json` | JSON Schema of the config, embedded in the binary |
@@ -63,3 +65,26 @@ Each symbol ticks at `speed.ticks_per_second` or `speed.interval_ms`, with optio
 | `replay` | `replay: { file, loop }`; CSV with a header naming `bid` and `ask` (or `mid`), one row per tick |
 
 A V with `SubscriptionRequestType=1` gets one W per symbol, then X on every tick (W if `update_mode: snapshot` or `MDUpdateType=0`). `MarketDepth=1` sends top of book; other values send up to `depth_levels`. Unknown symbols and duplicate MDReqIDs get Y. A slow session only receives the latest tick per symbol (conflation), so it never slows down the others. `market_data.batching` groups ticks of several symbols into one X (design doc, section 6.6), globally or per session.
+
+## Orders
+
+Only Market orders (`OrdType=1`) are accepted; other types get `OrdRejReason=11` before any rule runs, as do unknown symbols (`1`), non-positive quantities (`13`) and duplicate ClOrdIDs (`6`).
+
+A new order is matched once against `order_rules` in ascending `priority`; the first match decides its action chain, otherwise `default_action` (built-in default: ack, then fill). Conditions in `match` are ANDed:
+
+| Field | Forms |
+| --- | --- |
+| `symbol`, `account`, `cl_ord_id`, `comp_id` | value, list, `{ regex: "..." }` |
+| `side` | `BUY`, `SELL`, `BUY_MINUS`, `SELL_PLUS`, `SELL_SHORT`, `SELL_SHORT_EXEMPT` (or the FIX value), or a list |
+| `ord_type` | `MARKET`, `LIMIT`, `STOP`, `STOP_LIMIT`, or a list |
+| `qty`, `price` | number, or `{ gt, gte, lt, lte, eq }` |
+| `tags` | `{ "9001": VIP }`, each value in any string form |
+| `probability` | `0.2`: a stable 20% of orders, decided by hashing the rule name, CompID and ClOrdID |
+
+Actions run at their cumulative `delay_ms`: `ack`, `fill` (remaining quantity), `partial_fill` (`ratio` or `qty`, optional `count` fills `delay_ms` apart), `reject` (`reason`, `text`), `cancel`, `expire`, `ignore`, `business_reject`. Fills use `price_mode: market` (ask for buys, bid for sells, plus the symbol's slippage, always against the client) or `price_mode: fixed` with `price`. Slippage types: `fixed` (`ticks`), `percent` (`value`), `random` (`min_ticks`..`max_ticks`, seeded from the symbol `seed`).
+
+Rules with `message_type: F` or `G` take exactly one action: `ack` (accept, optionally after `delay_ms`), `reject` (OrderCancelReject with `reason`) or `ignore`. Without a matching rule a cancel or replace is accepted at once. A cancel drops the order's pending actions; a replace may change only `OrderQty`, and the remaining actions continue with the new quantity. Orders in flight keep their action chain when the rules are reloaded.
+
+With `server.monitor.drop_copy: true`, every ExecutionReport is copied to the monitor session with tag 5001 naming the source session.
+
+`internal/order/testdata/order_flow.golden` holds the exact message sequence of a scripted order flow on a fake clock; after an intended change run `go test ./internal/order -run Golden -update` and review the diff.

@@ -115,18 +115,6 @@ func TestParseErrors(t *testing.T) {
 			wantLine: 14,
 		},
 		{
-			name: "bad regex",
-			yaml: base + `order_rules:
-  - name: r1
-    priority: 1
-    match: { cl_ord_id: { regex: "(" } }
-    actions: [ { type: ack } ]
-`,
-			wantPath: "order_rules[0].match.cl_ord_id.regex",
-			wantLine: 17,
-			wantMsg:  "invalid regex",
-		},
-		{
 			name: "duplicate rule name and priority",
 			yaml: base + `order_rules:
   - { name: r1, priority: 1, actions: [ { type: ack } ] }
