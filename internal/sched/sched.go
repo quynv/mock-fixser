@@ -49,17 +49,20 @@ func (s *Scheduler) Now() time.Time { return s.clock.Now() }
 
 // Run executes due tasks until ctx ends.
 func (s *Scheduler) Run(ctx context.Context) error {
-	timer := s.clock.NewTimer(time.Hour)
+	// The timer is armed only after each round of work, so a test that
+	// waits for an armed timer knows the scheduler is idle.
+	s.RunDue()
+	timer := s.clock.NewTimer(s.untilNext())
 	defer timer.Stop()
 	for {
-		s.RunDue()
-		timer.Reset(s.untilNext())
 		select {
 		case <-ctx.Done():
 			return nil
 		case <-timer.C():
 		case <-s.wake:
 		}
+		s.RunDue()
+		timer.Reset(s.untilNext())
 	}
 }
 

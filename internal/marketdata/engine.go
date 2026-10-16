@@ -137,10 +137,11 @@ func (e *Engine) signal() {
 
 // Run ticks symbols until ctx ends.
 func (e *Engine) Run(ctx context.Context) error {
-	timer := e.clock.NewTimer(time.Hour)
+	// The timer is armed only after each round of work, so a test that
+	// waits for an armed timer knows the engine is idle.
+	timer := e.clock.NewTimer(e.untilNext())
 	defer timer.Stop()
 	for {
-		timer.Reset(e.untilNext())
 		select {
 		case <-ctx.Done():
 			return nil
@@ -151,6 +152,7 @@ func (e *Engine) Run(ctx context.Context) error {
 			metrics.Ticks.WithLabelValues(q.Symbol).Inc()
 			e.sink(q)
 		}
+		timer.Reset(e.untilNext())
 	}
 }
 

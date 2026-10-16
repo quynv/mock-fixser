@@ -41,6 +41,7 @@ type Fake struct {
 	cond   *sync.Cond
 	now    time.Time
 	timers map[*fakeTimer]struct{}
+	arms   int // timers armed so far (NewTimer and Reset)
 }
 
 func NewFake(start time.Time) *Fake {
@@ -104,9 +105,28 @@ func (f *Fake) BlockUntil(n int) {
 	}
 }
 
+// Arms returns how many times a timer was armed (NewTimer or Reset).
+func (f *Fake) Arms() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.arms
+}
+
+// BlockUntilArms waits until timers were armed at least n times. Unlike
+// BlockUntil, it also waits when the code under test re-arms a timer that
+// is still pending, e.g. after a wake-up that is not a timer.
+func (f *Fake) BlockUntilArms(n int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for f.arms < n {
+		f.cond.Wait()
+	}
+}
+
 func (f *Fake) arm(t *fakeTimer, d time.Duration) {
 	t.when = f.now.Add(d)
 	f.timers[t] = struct{}{}
+	f.arms++
 	f.cond.Broadcast()
 }
 

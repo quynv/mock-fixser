@@ -64,6 +64,18 @@ func step(clk *clock.Fake, total, by time.Duration) {
 	}
 }
 
+// apply calls ApplySymbols and waits until the engine has handled the
+// wake-up and re-armed its timer. BlockUntil(1) is not enough: the old
+// timer is still armed, so it returns before the engine runs.
+func apply(t *testing.T, e *Engine, clk *clock.Fake, symbols []config.Symbol) {
+	t.Helper()
+	n := clk.Arms()
+	if err := e.ApplySymbols(symbols); err != nil {
+		t.Fatal(err)
+	}
+	clk.BlockUntilArms(n + 1)
+}
+
 func TestEngineTicksAtConfiguredSpeed(t *testing.T) {
 	_, clk, log := startEngine(t, []config.Symbol{
 		sym("A", config.Speed{TicksPerSecond: 5}),
@@ -82,10 +94,7 @@ func TestEngineApplySymbols(t *testing.T) {
 	lastA, _, _ := e.Last("A")
 	changed := sym("A", config.Speed{IntervalMs: 100})
 	changed.Spread = 0.04
-	if err := e.ApplySymbols([]config.Symbol{changed, sym("C", config.Speed{IntervalMs: 50})}); err != nil {
-		t.Fatal(err)
-	}
-	clk.BlockUntil(1)
+	apply(t, e, clk, []config.Symbol{changed, sym("C", config.Speed{IntervalMs: 50})})
 
 	q, cfg, _ := e.Last("A")
 	if cfg.Spread != 0.04 || q.Mid != lastA.Mid || q.Ask-q.Bid < 0.039 {
@@ -104,10 +113,7 @@ func TestEngineApplySymbols(t *testing.T) {
 		t.Fatalf("A ticks after change = %d, want 5", got)
 	}
 
-	if err := e.ApplySymbols([]config.Symbol{changed}); err != nil {
-		t.Fatal(err)
-	}
-	clk.BlockUntil(1)
+	apply(t, e, clk, []config.Symbol{changed})
 	before = log.count("C")
 	step(clk, 300*time.Millisecond, 10*time.Millisecond)
 	if e.Known("C") || log.count("C") != before {
