@@ -7,6 +7,8 @@ import (
 	"github.com/quickfixgo/quickfix"
 	"github.com/quickfixgo/quickfix/config"
 
+	"github.com/quynv/mock-fixser/internal/fixver"
+
 	mfconfig "github.com/quynv/mock-fixser/internal/config"
 )
 
@@ -17,9 +19,12 @@ import (
 const listenerPlaceholderTarget = "__MOCKFIX_LISTENER__"
 
 // clientSettings builds the client acceptor settings (section 5.1). Client
-// sessions are dynamic: the ConnectionValidator admits only CompIDs that
-// are in the running config.
-func clientSettings(fix mfconfig.FIXServer) (*quickfix.Settings, error) {
+// sessions of the default version are dynamic: the ConnectionValidator
+// admits only CompIDs that are in the running config. Sessions of other
+// versions need their own dictionaries, so they are static sessions,
+// created when the acceptor starts (section 5.3).
+func clientSettings(cfg *mfconfig.Config) (*quickfix.Settings, error) {
+	fix := cfg.Server.FIX
 	host, port, err := net.SplitHostPort(fix.Listen)
 	if err != nil {
 		return nil, fmt.Errorf("server.fix.listen: %w", err)
@@ -37,6 +42,28 @@ func clientSettings(fix mfconfig.FIXServer) (*quickfix.Settings, error) {
 	ph.Set(config.TargetCompID, listenerPlaceholderTarget)
 	if _, err := s.AddSession(ph); err != nil {
 		return nil, err
+	}
+
+	for _, cs := range fix.Sessions {
+		v := cfg.SessionVersion(cs)
+		if v == fix.Version {
+			continue
+		}
+		ss := quickfix.NewSessionSettings()
+		ss.Set(config.BeginString, fixver.BeginString(v))
+		ss.Set(config.SenderCompID, cs.SenderCompID)
+		ss.Set(config.TargetCompID, cs.TargetCompID)
+		app, transport := fixver.Dictionaries(v, fix.DataDictionary)
+		if transport != "" {
+			ss.Set(config.TransportDataDictionary, transport)
+			ss.Set(config.AppDataDictionary, app)
+			ss.Set(config.DefaultApplVerID, v)
+		} else {
+			ss.Set(config.DataDictionary, app)
+		}
+		if _, err := s.AddSession(ss); err != nil {
+			return nil, err
+		}
 	}
 	return s, nil
 }
@@ -72,4 +99,9 @@ func senderOrDefault(fix mfconfig.FIXServer) string {
 
 func sessionID(beginString string, k mfconfig.SessionKey) quickfix.SessionID {
 	return quickfix.SessionID{BeginString: beginString, SenderCompID: k.SenderCompID, TargetCompID: k.TargetCompID}
+}
+
+// SessionIDOf returns the quickfix SessionID of a configured client session.
+func SessionIDOf(cfg *mfconfig.Config, cs mfconfig.Session) quickfix.SessionID {
+	return sessionID(fixver.BeginString(cfg.SessionVersion(cs)), cs.Key())
 }

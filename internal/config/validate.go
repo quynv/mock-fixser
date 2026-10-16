@@ -2,6 +2,8 @@ package config
 
 import (
 	"fmt"
+
+	"github.com/quynv/mock-fixser/internal/fixver"
 	"math"
 	"os"
 )
@@ -87,6 +89,19 @@ func validate(c *Config) []FieldError {
 			add(p, "duplicate session %s (also server.fix.sessions[%d])", s.Key(), j)
 		} else {
 			sessions[s.Key()] = i
+		}
+		if v := c.SessionVersion(s); v != c.Server.FIX.Version {
+			app, transport := fixver.Dictionaries(v, c.Server.FIX.DataDictionary)
+			for _, f := range []string{app, transport} {
+				if f == "" {
+					continue
+				}
+				if fh, err := os.Open(f); err != nil {
+					add(p+".version", "%s needs the data dictionary %s: %v", v, f, err)
+				} else {
+					fh.Close()
+				}
+			}
 		}
 		if s.TargetCompID == c.Server.Monitor.TargetCompID {
 			add(p+".target_comp_id", "target_comp_id %q is reserved for the monitor session", s.TargetCompID)

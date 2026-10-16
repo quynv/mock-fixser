@@ -81,6 +81,7 @@ export type RuleTestResult = { rule: string; actions: RuleTestStep[]; total_ms: 
 export type SessionInfo = {
   id: string;
   kind: "client" | "monitor";
+  version: string;
   sender_comp_id: string;
   target_comp_id: string;
   logged_on: boolean;

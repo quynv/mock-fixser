@@ -602,7 +602,7 @@ func (a *api) testRule(w http.ResponseWriter, r *http.Request) {
 		Side:        fixValue(t.Side, map[string]string{"BUY": "1", "SELL": "2"}),
 		OrdType:     fixValue(orDefault(t.OrdType, "MARKET"), map[string]string{"MARKET": "1", "LIMIT": "2", "STOP": "3", "STOP_LIMIT": "4"}),
 		TimeInForce: fixValue(t.TimeInForce, map[string]string{"DAY": "0", "GTC": "1", "IOC": "3", "FOK": "4"}),
-		Account: t.Account, ClOrdID: t.ClOrdID, Qty: t.Qty, Price: t.Price,
+		Account:     t.Account, ClOrdID: t.ClOrdID, Qty: t.Qty, Price: t.Price,
 		InList: t.InList, ListID: t.ListID, ListSeqNo: t.ListSeqNo,
 		Tag: func(tag int) (string, bool) { v, ok := t.Tags[strconv.Itoa(tag)]; return v, ok },
 	}
@@ -647,10 +647,15 @@ func (a *api) sessions(w http.ResponseWriter, _ *http.Request) {
 
 // sessionByID finds a session by its full ID or its target CompID.
 func (a *api) sessionByID(id string) (quickfix.SessionID, bool) {
-	for _, s := range a.Server.Sessions(a.Store.Current()) {
-		if s.ID == id || s.TargetCompID == id {
-			return quickfix.SessionID{BeginString: a.Store.Current().Server.FIX.Version, SenderCompID: s.SenderCompID, TargetCompID: s.TargetCompID}, true
+	cfg := a.Store.Current()
+	for _, cs := range cfg.Server.FIX.Sessions {
+		sid := fixserver.SessionIDOf(cfg, cs)
+		if sid.String() == id || cs.TargetCompID == id {
+			return sid, true
 		}
+	}
+	if m := cfg.Server.Monitor; m.Enabled && (m.TargetCompID == id || strings.HasSuffix(id, ":"+m.SenderCompID+"->"+m.TargetCompID)) {
+		return quickfix.SessionID{BeginString: cfg.Server.FIX.Version, SenderCompID: m.SenderCompID, TargetCompID: m.TargetCompID}, true
 	}
 	return quickfix.SessionID{}, false
 }

@@ -189,14 +189,27 @@ bin/mockfix --config /tmp/load.yaml --log-level warn &
 go run ./cmd/loadgen -sessions 10 -symbols 200 -orders 100 -duration 30s
 ```
 
-On an Apple M3 Pro (11 cores), 10 sessions × 200 symbols × 25 ticks/s with 100 orders/s, without batching:
+On an Apple M3 Pro (11 cores), 10 sessions × 200 symbols × 25 ticks/s with 100 orders/s, without batching. The round trip includes the load generator itself, which parses 5,000 market data messages per second and session before it reads each report:
 
 | | Result | Target (section 2.2) |
 | --- | --- | --- |
 | Ticks generated | 5,087/s | ≥ 5,000/s |
 | Market data delivered | 50,850 messages/s (every tick to every session), 0 conflated | |
-| Order latency | p50 0.25 ms, p99 4.2 ms | p99 < 5 ms |
+| Order handling in the server (`mockfix_order_latency_seconds`) | p99 ≤ 0.1 ms | p99 < 5 ms |
+| Order round trip, D to first ExecutionReport, measured by the client | p50 0.22–0.25 ms, p99 3.6–5.6 ms over several runs | |
 | Server CPU | 2.4 cores | |
 | Server memory | 121 MiB | |
 
 Each session sends through flow control: at most one application message waits for the network, orders go before market data, and a session that stops reading only has its own ticks conflated. Market data and U1 messages are not kept for resend; a ResendRequest gets a gap fill for them.
+
+## FIX versions
+
+Sessions use `server.fix.version` (FIX.4.4) unless they set their own `version`: `FIX.4.2` or `FIX.5.0SP2` (over FIXT.1.1, DefaultApplVerID 9).
+
+```yaml
+sessions:
+  - { sender_comp_id: MOCKSRV, target_comp_id: CLIENT42, version: FIX.4.2 }
+  - { sender_comp_id: MOCKSRV, target_comp_id: CLIENT50, version: FIX.5.0SP2 }
+```
+
+Their dictionaries are read next to `data_dictionary`: `spec/FIX42.xml`, and `spec/FIXT11.xml` with `spec/FIX50SP2.xml`. The engines work on the same messages for every version; FIX 4.2 ExecutionReports carry ExecTransType, report fills with ExecType 1 or 2 and answer OrderStatusRequest with ExecTransType 3. Drop copies and the UI stay on FIX 4.4. Sessions of another version than `server.fix.version` are created when the acceptor starts, so adding one or changing a session's version needs a restart (reported as `restart_required`).

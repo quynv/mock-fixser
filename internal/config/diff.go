@@ -52,15 +52,22 @@ func Compare(old, new *Config) Diff {
 	check("order_lists", old.OrderLists, new.OrderLists, false)
 	check("list_rules", old.ListRules, new.ListRules, false)
 
-	oldKeys := map[SessionKey]bool{}
+	oldVersions := map[SessionKey]string{}
 	for _, s := range of.Sessions {
-		oldKeys[s.Key()] = true
+		oldVersions[s.Key()] = old.SessionVersion(s)
 	}
 	newKeys := map[SessionKey]bool{}
 	for _, s := range nf.Sessions {
 		newKeys[s.Key()] = true
-		if !oldKeys[s.Key()] {
+		v := new.SessionVersion(s)
+		ov, existed := oldVersions[s.Key()]
+		if !existed {
 			d.SessionsAdded = append(d.SessionsAdded, s.Key())
+		}
+		// Sessions of other versions than server.fix.version are set up when
+		// the acceptor starts (section 5.3).
+		if (!existed && v != nf.Version) || (existed && ov != v) {
+			d.RestartRequired = append(d.RestartRequired, "server.fix.sessions "+s.Key().String()+" "+v)
 		}
 	}
 	for _, s := range of.Sessions {

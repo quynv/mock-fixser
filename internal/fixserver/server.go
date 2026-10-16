@@ -63,14 +63,14 @@ func New(cfg *config.Config, log *slog.Logger) (*Server, error) {
 		faultStates: map[quickfix.SessionID]*faultState{},
 		flows:       map[quickfix.SessionID]*flow{},
 	}
-	s.setAllowed(cfg.Server.FIX.Sessions)
+	s.setAllowed(cfg)
 
 	s.SetTap(nil)
 	s.app.checkLogon = s.checkLogon
 	s.app.onLogon = append(s.app.onLogon, s.startFaults)
 	s.app.onLogout = append(s.app.onLogout, s.stopFaults, func(id quickfix.SessionID) { s.flowFor(id).reset() })
 	logs := slogLogFactory{log: log, tap: &s.tap}
-	cs, err := clientSettings(cfg.Server.FIX)
+	cs, err := clientSettings(cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -173,6 +173,7 @@ func (s *Server) OnLogout(fn func(quickfix.SessionID)) {
 type SessionInfo struct {
 	ID            string                `json:"id"`
 	Kind          string                `json:"kind"` // client or monitor
+	Version       string                `json:"version"`
 	SenderCompID  string                `json:"sender_comp_id"`
 	TargetCompID  string                `json:"target_comp_id"`
 	LoggedOn      bool                  `json:"logged_on"`
@@ -185,10 +186,12 @@ type SessionInfo struct {
 // Sessions lists the configured client sessions and the monitor session.
 func (s *Server) Sessions(cfg *config.Config) []SessionInfo {
 	var out []SessionInfo
-	add := func(kind string, k config.SessionKey, faults *config.SessionFaults) {
-		id := sessionID(s.beginString, k)
-		info := SessionInfo{ID: id.String(), Kind: kind, SenderCompID: k.SenderCompID, TargetCompID: k.TargetCompID,
-			LoggedOn: s.app.loggedOn(id), Faults: faults}
+	add := func(kind string, id quickfix.SessionID, faults *config.SessionFaults) {
+		info := SessionInfo{ID: id.String(), Kind: kind, Version: id.BeginString, SenderCompID: id.SenderCompID,
+			TargetCompID: id.TargetCompID, LoggedOn: s.app.loggedOn(id), Faults: faults}
+		if id.BeginString == quickfix.BeginStringFIXT11 {
+			info.Version = "FIX.5.0SP2"
+		}
 		if info.LoggedOn {
 			info.NextSenderSeq, _ = quickfix.GetExpectedSenderNum(id)
 			info.NextTargetSeq, _ = quickfix.GetExpectedTargetNum(id)
@@ -201,10 +204,10 @@ func (s *Server) Sessions(cfg *config.Config) []SessionInfo {
 		out = append(out, info)
 	}
 	for _, cs := range cfg.Server.FIX.Sessions {
-		add("client", cs.Key(), cs.Faults)
+		add("client", SessionIDOf(cfg, cs), cs.Faults)
 	}
 	if m := cfg.Server.Monitor; m.Enabled {
-		add("monitor", config.SessionKey{SenderCompID: m.SenderCompID, TargetCompID: m.TargetCompID}, nil)
+		add("monitor", sessionID(s.beginString, config.SessionKey{SenderCompID: m.SenderCompID, TargetCompID: m.TargetCompID}), nil)
 	}
 	return out
 }
@@ -239,20 +242,33 @@ func (s *Server) LoggedOn(id quickfix.SessionID) bool { return s.app.loggedOn(id
 // OnConfigChange admits added client sessions and logs out removed ones.
 // Listen address and dictionary changes need a restart (section 9.3).
 func (s *Server) OnConfigChange(c config.Change) {
-	s.setAllowed(c.New.Server.FIX.Sessions)
+	s.setAllowed(c.New)
+	removed := map[config.SessionKey]bool{}
 	for _, k := range c.Diff.SessionsRemoved {
-		s.removeSession(sessionID(s.beginString, k))
+		removed[k] = true
 	}
+	for _, cs := range c.Old.Server.FIX.Sessions {
+		if removed[cs.Key()] {
+			s.removeSession(SessionIDOf(c.Old, cs))
+		}
+	}
+	added := map[config.SessionKey]bool{}
 	for _, k := range c.Diff.SessionsAdded {
-		s.log.Info("session added", "session", sessionID(s.beginString, k).String())
+		added[k] = true
+	}
+	for _, cs := range c.New.Server.FIX.Sessions {
+		if added[cs.Key()] {
+			s.log.Info("session added", "session", SessionIDOf(c.New, cs).String())
+		}
 	}
 }
 
-func (s *Server) setAllowed(sessions []config.Session) {
+func (s *Server) setAllowed(cfg *config.Config) {
+	sessions := cfg.Server.FIX.Sessions
 	m := make(map[quickfix.SessionID]bool, len(sessions))
 	f := make(map[quickfix.SessionID]*config.SessionFaults, len(sessions))
 	for _, cs := range sessions {
-		id := sessionID(s.beginString, cs.Key())
+		id := SessionIDOf(cfg, cs)
 		m[id] = true
 		if cs.Faults != nil {
 			f[id] = cs.Faults

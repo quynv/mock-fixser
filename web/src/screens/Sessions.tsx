@@ -21,6 +21,7 @@ export function Sessions() {
         <thead>
           <tr>
             <th>Kind</th>
+            <th>Version</th>
             <th>SenderCompID</th>
             <th>TargetCompID</th>
             <th>State</th>
@@ -35,6 +36,7 @@ export function Sessions() {
           {sessions.map((s) => (
             <tr key={s.id}>
               <td>{s.kind}</td>
+              <td className="mono">{s.version}</td>
               <td className="mono">{s.sender_comp_id}</td>
               <td className="mono">{s.target_comp_id}</td>
               <td>

@@ -112,6 +112,7 @@
       "properties": {
         "sender_comp_id": { "$ref": "#/$defs/compID" },
         "target_comp_id": { "$ref": "#/$defs/compID" },
+        "version": { "enum": ["FIX.4.2", "FIX.4.4", "FIX.5.0SP2"] },
         "faults": {
           "type": "object",
           "additionalProperties": false,

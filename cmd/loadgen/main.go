@@ -253,6 +253,9 @@ func report(st *stats, sentOrders int, elapsed time.Duration, before, after map[
 		return
 	}
 	d := func(name string) float64 { return after[name] - before[name] }
+	if p99, ok := histQuantile(before, after, `mockfix_order_latency_seconds_bucket{msg_type="D"`, 0.99); ok {
+		fmt.Printf("server handling   p99 %v for D (mockfix_order_latency_seconds)\n", time.Duration(p99*float64(time.Second)).Round(time.Microsecond))
+	}
 	fmt.Printf("server ticks      %.0f ticks/s generated\n", d("mockfix_ticks_total")/secs)
 	fmt.Printf("server conflated  %.0f ticks dropped for slow sessions\n", d("mockfix_md_conflated_total"))
 	fmt.Printf("server CPU        %.0f%% of one core\n", 100*d("process_cpu_seconds_total")/secs)
@@ -264,7 +267,52 @@ func report(st *stats, sentOrders int, elapsed time.Duration, before, after map[
 	}
 }
 
-// scrape sums every sample of each metric family in /metrics.
+// histQuantile estimates a quantile from the bucket deltas of one
+// histogram series (prefix up to, but not including, its le label).
+func histQuantile(before, after map[string]float64, prefix string, q float64) (float64, bool) {
+	type bucket struct{ le, n float64 }
+	var bs []bucket
+	for k, v := range after {
+		if !strings.HasPrefix(k, prefix) {
+			continue
+		}
+		i := strings.Index(k, `le="`)
+		if i < 0 {
+			continue
+		}
+		leStr := k[i+4 : strings.IndexByte(k[i+4:], '"')+i+4]
+		le, err := strconv.ParseFloat(leStr, 64)
+		if err != nil {
+			le = math.Inf(1)
+		}
+		bs = append(bs, bucket{le, v - before[k]})
+	}
+	if len(bs) == 0 {
+		return 0, false
+	}
+	slices.SortFunc(bs, func(a, b bucket) int {
+		switch {
+		case a.le < b.le:
+			return -1
+		case a.le > b.le:
+			return 1
+		}
+		return 0
+	})
+	total := bs[len(bs)-1].n
+	if total == 0 {
+		return 0, false
+	}
+	for _, b := range bs {
+		if b.n >= q*total {
+			return b.le, true // upper bound of the bucket
+		}
+	}
+	return bs[len(bs)-1].le, true
+}
+
+// scrape sums every sample of each metric family in /metrics; histogram
+// buckets keep their labels.
 func scrape(url string) (map[string]float64, error) {
 	if url == "" {
 		return nil, nil
@@ -282,12 +330,17 @@ func scrape(url string) (map[string]float64, error) {
 		if line == "" || line[0] == '#' {
 			continue
 		}
-		name, _, _ := strings.Cut(line, "{")
-		name, _, _ = strings.Cut(name, " ")
+		key := line[:strings.LastIndexByte(line, ' ')]
 		v, err := strconv.ParseFloat(line[strings.LastIndexByte(line, ' ')+1:], 64)
-		if err == nil {
-			out[name] += v
+		if err != nil {
+			continue
 		}
+		if strings.Contains(key, "_bucket{") {
+			out[key] = v
+			continue
+		}
+		name, _, _ := strings.Cut(key, "{")
+		out[name] += v
 	}
 	return out, sc.Err()
 }

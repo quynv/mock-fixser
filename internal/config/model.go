@@ -55,10 +55,12 @@ type FIXServer struct {
 }
 
 type Session struct {
-	SenderCompID string             `yaml:"sender_comp_id" json:"sender_comp_id"`
-	TargetCompID string             `yaml:"target_comp_id" json:"target_comp_id"`
-	Faults       *SessionFaults     `yaml:"faults,omitempty" json:"faults,omitempty"`
-	MarketData   *SessionMarketData `yaml:"market_data,omitempty" json:"market_data,omitzero"`
+	SenderCompID string `yaml:"sender_comp_id" json:"sender_comp_id"`
+	TargetCompID string `yaml:"target_comp_id" json:"target_comp_id"`
+	// Version is FIX.4.2, FIX.4.4 or FIX.5.0SP2; empty means server.fix.version.
+	Version    string             `yaml:"version,omitempty" json:"version,omitempty"`
+	Faults     *SessionFaults     `yaml:"faults,omitempty" json:"faults,omitempty"`
+	MarketData *SessionMarketData `yaml:"market_data,omitempty" json:"market_data,omitzero"`
 }
 
 // SessionFaults simulates session problems (design doc, section 5.4). They
@@ -204,6 +206,14 @@ type Action struct {
 type SessionKey struct {
 	SenderCompID string
 	TargetCompID string
+}
+
+// SessionVersion returns the FIX version of a client session.
+func (c *Config) SessionVersion(s Session) string {
+	if s.Version != "" {
+		return s.Version
+	}
+	return c.Server.FIX.Version
 }
 
 func (s Session) Key() SessionKey {

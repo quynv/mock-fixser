@@ -231,3 +231,29 @@ func TestStoreWatchReloadsFileEdits(t *testing.T) {
 		t.Fatalf("version = %d, want 3", s.Current().Version)
 	}
 }
+
+func TestDiffSessionVersions(t *testing.T) {
+	chdirRepoRoot(t) // spec/FIX42.xml
+	old, err := Parse([]byte(base))
+	if err != nil {
+		t.Fatal(err)
+	}
+	add42 := strings.Replace(base, "      - { sender_comp_id: MOCKSRV, target_comp_id: CLIENT1 }\n",
+		"      - { sender_comp_id: MOCKSRV, target_comp_id: CLIENT1 }\n      - { sender_comp_id: MOCKSRV, target_comp_id: C42, version: FIX.4.2 }\n", 1)
+	cfg42, err := Parse([]byte(add42))
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := Compare(old, cfg42)
+	if len(d.RestartRequired) != 1 || !strings.Contains(d.RestartRequired[0], "C42 FIX.4.2") {
+		t.Fatalf("adding a FIX 4.2 session: restart_required = %v", d.RestartRequired)
+	}
+	add44 := strings.Replace(add42, "version: FIX.4.2", "version: FIX.4.4", 1)
+	cfg44, _ := Parse([]byte(add44))
+	if d := Compare(old, cfg44); len(d.RestartRequired) != 0 {
+		t.Fatalf("adding a default-version session needs no restart: %v", d.RestartRequired)
+	}
+	if d := Compare(cfg44, cfg42); len(d.RestartRequired) != 1 {
+		t.Fatalf("changing a session's version: %v", d.RestartRequired)
+	}
+}

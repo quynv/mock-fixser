@@ -15,6 +15,7 @@ import (
 	"github.com/quynv/mock-fixser/fix/enum"
 	"github.com/quynv/mock-fixser/fix/tag"
 	"github.com/quynv/mock-fixser/internal/config"
+	"github.com/quynv/mock-fixser/internal/fixver"
 	"github.com/quynv/mock-fixser/internal/marketdata"
 	"github.com/quynv/mock-fixser/internal/metrics"
 	"github.com/quynv/mock-fixser/internal/sched"
@@ -45,6 +46,7 @@ type Engine struct {
 	massSeq  uint64
 	outboxes map[quickfix.SessionID]*outbox
 	waiting  map[string][]waiter // fill steps waiting for the market, by symbol
+	waiters  atomic.Int64        // len of all waiting lists, read without the lock
 }
 
 func NewEngine(cfg *config.Config, quotes Quotes, s *sched.Scheduler, log *slog.Logger, send Sender) (*Engine, error) {
@@ -89,11 +91,14 @@ func (e *Engine) Route(r *quickfix.MessageRouter) {
 		"E": e.handleNewList, "K": e.handleListCancel, "M": e.handleListStatusRequest, "q": e.handleMassCancel,
 	} {
 		obs := metrics.OrderLatency.WithLabelValues(msgType)
-		r.AddRoute(quickfix.BeginStringFIX44, msgType, func(m *quickfix.Message, id quickfix.SessionID) quickfix.MessageRejectError {
+		route := func(m *quickfix.Message, id quickfix.SessionID) quickfix.MessageRejectError {
 			start := time.Now()
 			defer func() { obs.Observe(time.Since(start).Seconds()) }()
 			return h(m, id)
-		})
+		}
+		for _, v := range fixver.RouteKeys {
+			r.AddRoute(v, msgType, route)
+		}
 	}
 }
 
@@ -516,7 +521,14 @@ func (e *Engine) reportLocked(o *Order, et enum.ExecType, extra func(*erFields))
 		l = e.book.list(o.Session, o.ListID)
 	}
 	if l == nil || f.solicited || l.lists.Report != "list_status" {
-		e.deliverLocked(o.Session, executionReport(o, f), true)
+		msg := executionReport(o, f, o.Session.BeginString)
+		if fixver.Is42(o.Session.BeginString) {
+			// The monitor session speaks FIX 4.4: copy the 4.4 form.
+			e.deliverLocked(o.Session, msg, false)
+			e.copyLocked(o.Session, executionReport(o, f, quickfix.BeginStringFIX44))
+		} else {
+			e.deliverLocked(o.Session, msg, true)
+		}
 	}
 	if l != nil {
 		e.listChangedLocked(l)
@@ -526,13 +538,20 @@ func (e *Engine) reportLocked(o *Order, et enum.ExecType, extra func(*erFields))
 // deliverLocked queues a message for a session and, if copy is set and
 // drop copy is on, a copy for the monitor session tagged with 5001.
 func (e *Engine) deliverLocked(id quickfix.SessionID, msg *quickfix.Message, copy bool) {
-	if dc := e.dropCopy.Load(); copy && dc != nil && id != *dc {
+	if copy {
 		cp := quickfix.NewMessage()
 		msg.CopyInto(cp)
-		cp.Body.SetField(tag.MirrorSessionID, quickfix.FIXString(id.String()))
-		e.outboxLocked(*dc).push(cp)
+		e.copyLocked(id, cp)
 	}
 	e.outboxLocked(id).push(msg)
+}
+
+// copyLocked sends msg as a drop copy of session id to the monitor session.
+func (e *Engine) copyLocked(id quickfix.SessionID, msg *quickfix.Message) {
+	if dc := e.dropCopy.Load(); dc != nil && id != *dc {
+		msg.Body.SetField(tag.MirrorSessionID, quickfix.FIXString(id.String()))
+		e.outboxLocked(*dc).push(msg)
+	}
 }
 
 func (e *Engine) outboxLocked(id quickfix.SessionID) *outbox {

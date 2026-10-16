@@ -13,6 +13,8 @@ import (
 	"github.com/quynv/mock-fixser/fix/fix44/businessmessagereject"
 	"github.com/quynv/mock-fixser/fix/fix44/executionreport"
 	"github.com/quynv/mock-fixser/fix/fix44/ordercancelreject"
+	"github.com/quynv/mock-fixser/fix/tag"
+	"github.com/quynv/mock-fixser/internal/fixver"
 )
 
 // erFields are the per-report parts of an ExecutionReport.
@@ -38,7 +40,10 @@ func scale(d decimal.Decimal) int32 {
 
 func dec(d decimal.Decimal) (decimal.Decimal, int32) { return d, scale(d) }
 
-func executionReport(o *Order, f erFields) *quickfix.Message {
+// executionReport builds the ExecutionReport for a session of the given
+// BeginString. FIX 4.2 needs ExecTransType, reports fills with ExecType 1
+// (partial) or 2 (filled) and has no ExecType I (order status).
+func executionReport(o *Order, f erFields, beginString string) *quickfix.Message {
 	avgPx := o.AvgPx.Round(8)
 	m := executionreport.New(
 		field.NewOrderID(o.OrderID),
@@ -87,7 +92,22 @@ func executionReport(o *Order, f erFields) *quickfix.Message {
 		m.SetText(f.text)
 	}
 	m.SetTransactTime(f.now)
-	return m.ToMessage()
+	msg := m.ToMessage()
+	if fixver.Is42(beginString) {
+		transType, execType := "0", f.execType
+		switch f.execType {
+		case string(enum.ExecType_TRADE):
+			execType = "1"
+			if o.Status == enum.OrdStatus_FILLED {
+				execType = "2"
+			}
+		case string(enum.ExecType_ORDERSTATUS):
+			transType, execType = "3", string(o.Status)
+		}
+		msg.Body.SetField(tag.ExecTransType, quickfix.FIXString(transType))
+		msg.Body.SetField(tag.ExecType, quickfix.FIXString(execType))
+	}
+	return msg
 }
 
 func cancelReject(orderID, clOrdID, orig string, status enum.OrdStatus, to enum.CxlRejResponseTo,

@@ -12,6 +12,7 @@ import (
 	"github.com/quynv/mock-fixser/fix/fix44/marketdatarequest"
 	"github.com/quynv/mock-fixser/internal/clock"
 	"github.com/quynv/mock-fixser/internal/config"
+	"github.com/quynv/mock-fixser/internal/fixver"
 	"github.com/quynv/mock-fixser/internal/metrics"
 )
 
@@ -168,9 +169,16 @@ func (p *Publisher) Close() {
 	}
 }
 
-// Route registers the V handler on a router.
+// Route registers the V handler on a router, for every FIX version: the
+// FIX 4.4 reader works for 4.2 and 5.0 requests, whose fields are a
+// subset or share the same tags.
 func (p *Publisher) Route(r *quickfix.MessageRouter) {
-	r.AddRoute(marketdatarequest.Route(p.HandleRequest))
+	route := func(m *quickfix.Message, id quickfix.SessionID) quickfix.MessageRejectError {
+		return p.HandleRequest(marketdatarequest.FromMessage(m), id)
+	}
+	for _, v := range fixver.RouteKeys {
+		r.AddRoute(v, "V", route)
+	}
 }
 
 // HandleRequest processes MarketDataRequest (V).

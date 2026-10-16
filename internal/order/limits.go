@@ -79,6 +79,7 @@ func (e *Engine) tryFillLocked(o *Order, gen uint64, st Step, qty func() decimal
 		return
 	}
 	e.waiting[o.Symbol] = append(e.waiting[o.Symbol], waiter{o: o, gen: gen, st: st, qty: qty})
+	e.waiters.Add(1)
 }
 
 // fillNowLocked fills qty if the order can execute against the current
@@ -164,6 +165,9 @@ func (e *Engine) executionPrice(o *Order, st Step) (decimal.Decimal, priceState)
 // OnQuote retries the fill steps waiting on a symbol. The market data
 // engine calls it for every tick.
 func (e *Engine) OnQuote(q marketdata.Quote) {
+	if e.waiters.Load() == 0 {
+		return // the usual case: no lock per tick
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	ws := e.waiting[q.Symbol]
@@ -179,6 +183,7 @@ func (e *Engine) OnQuote(q marketdata.Quote) {
 			keep = append(keep, w)
 		}
 	}
+	e.waiters.Add(int64(len(keep) - len(ws)))
 	if len(keep) == 0 {
 		delete(e.waiting, q.Symbol)
 	} else {
