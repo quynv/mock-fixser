@@ -177,6 +177,8 @@ The HTTP server (`server.http.listen`, default `:8080`) serves the REST API unde
 | POST | `/api/symbols/{symbol}/pause`, `/resume` | Runtime: stop or restart ticks |
 | POST | `/api/symbols/{symbol}/price` | Runtime: `{ "mid": 1.09 }` |
 | POST | `/api/symbols/{symbol}/spike` | Runtime: `{ "percent": 2, "direction": "up" }` |
+| POST | `/api/symbols/{symbol}/quote-cancel` | Runtime: QuoteCancel (Z) for one symbol |
+| POST | `/api/quote-cancel` | Runtime: `{ "symbols": [...], "session": "..." }`, no symbols = all quotes |
 | GET, POST | `/api/rules` | List by priority, add |
 | PUT, DELETE | `/api/rules/{name}` | Edit (may rename), delete |
 | PUT | `/api/rules/order` | `{ "order": ["a", "b"] }`: priorities 10, 20, ... |
@@ -251,3 +253,47 @@ sessions:
 ```
 
 Their dictionaries are read next to `data_dictionary`: `spec/FIX42.xml`, and `spec/FIXT11.xml` with `spec/FIX50SP2.xml`. The engines work on the same messages for every version; FIX 4.2 ExecutionReports carry ExecTransType, report fills with ExecType 1 or 2 and answer OrderStatusRequest with ExecTransType 3. Drop copies and the UI stay on FIX 4.4. Sessions of another version than `server.fix.version` are created when the acceptor starts, so adding one or changing a session's version needs a restart (reported as `restart_required`).
+
+## TLS
+
+`server.fix.tls` makes the client acceptor TLS-only (the monitor acceptor stays plain TCP on loopback):
+
+```yaml
+server:
+  fix:
+    tls:
+      cert_file: certs/server.crt
+      key_file: certs/server.key
+      client_auth: request        # none (default) | request (accept any client certificate) | require
+      client_ca_file: certs/ca.crt  # needed for require
+```
+
+`go run ./cmd/gencerts -dir certs -hosts localhost,127.0.0.1` writes a test CA, `server.crt/key` and `client.crt/key`. A TLS change needs a restart.
+
+## LP behavior options
+
+- `market_data.send_both_sides: true` (or per session under `market_data`) sends bid and offer entries whatever MDEntryTypes the request lists, as oneZero does.
+- `quote_condition: A` on a symbol adds QuoteCondition (276) to every bid and offer entry; `B` simulates a closed market. Without it, 276 is not sent.
+- QuoteCancel (Z): `POST /api/quote-cancel` or the Quote cancel buttons on the Symbols screen drop the subscriptions and send QuoteCancelType 1 (listed symbols) or 4 (all quotes); clients must subscribe again.
+
+## Using mockfix with the postprime-sec gateways
+
+mockfix stands in for oneZero behind `order-gateway` and `price-gateway` (design doc, section 14.3). A config for them:
+
+```yaml
+server:
+  fix:
+    listen: 0.0.0.0:9876
+    tls: { cert_file: certs/server.crt, key_file: certs/server.key, client_auth: request }
+    sessions:
+      - { sender_comp_id: TakaTradeUAT_T, target_comp_id: PostPrimeTaker_T }   # orders
+      - sender_comp_id: TakaTradeUAT_Q                                          # prices
+        target_comp_id: PostPrimeTaker_Q
+        market_data: { send_both_sides: true }
+symbols:
+  - { symbol: XAUUSD, initial_price: 2400, min: 2000, max: 2800, tick_size: 0.01, spread: 0.30,
+      quote_condition: A, speed: { ticks_per_second: 2 } }
+default_action: [ { type: ack }, { type: fill } ]
+```
+
+In the gateways' `.cfg`, point `SocketConnectHost`/`SocketConnectPort` at mockfix and keep `SocketUseSSL=Y` with any client certificate (for example `certs/client.crt`). The symbols must match the gateways' product tickers; keeping them in sync is up to the developer.

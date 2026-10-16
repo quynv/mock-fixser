@@ -184,6 +184,8 @@ The server runs two quickfixgo acceptors in the same process: one for external c
 
 quickfixgo settings are generated in code from the YAML (quickfix.NewSettings and AddSession); there is no separate .cfg file. The store is MemoryStoreFactory; every start is a new trading day and sequences start at 1. Persisting sequences across restarts is done in phase 7 with the WAL (section 15). If the quickfixgo version in use does not support SocketAcceptHost, check TargetCompID in FromAdmin at Logon and block UI\_MONITOR from outside addresses with a firewall.
 
+The client acceptor can require TLS with `server.fix.tls` (cert\_file, key\_file, client\_auth: none | request | require, client\_ca\_file), because real LP connections such as oneZero's are TLS with a client certificate and clients keep the same settings against the mock. mockfix builds the tls.Config itself and passes it to the acceptor rather than using quickfixgo's Socket\* settings, whose meaning of SocketUseSSL on an acceptor is to skip client certificates. The monitor acceptor stays plain TCP on loopback. `cmd/gencerts` writes a test CA, server and client certificates. A TLS change needs a restart.
+
 ### 5.2 Router
 
 fixserver.App implements quickfix.Application and uses quickfix.MessageRouter to dispatch messages by MsgType:
@@ -218,7 +220,7 @@ The U1 message (MirrorLog) contains 5001, 5002, 5003 and 5004 and is only sent s
 
 The U2 message (MonitorControl) contains tags 5005 ControlKey (STRING) and 5006 ControlValue (STRING), flows only UI\_MONITOR → server, and carries control commands for the monitor session such as turning U1 delivery on or off (section 8.3).
 
-Only FIX 4.4 is supported today. To add other versions later (4.2, 5.0 SP2 over FIXT 1.1), the data dictionary and generated package are selected per session from the start, and the router works with internal types (Order, Quote) instead of being tied to the fix44 package.
+Only FIX 4.4 is supported today. To add other versions later (4.2, 5.0 SP2 over FIXT 1.1), the data dictionary and generated package are selected per session from the start, and the router works with internal types (Order, Quote) instead of being tied to the fix44 package. Phase 6 added FIX 4.2 and FIX 5.0 SP2 per session (section 14.2).
 
 ### 5.4 Session fault simulation (phase 6)
 
@@ -272,13 +274,22 @@ Speed is configured with ticks\_per\_second or interval\_ms, plus random jitter\
 
 MarketDepth=1 sends top of book only; any other value sends up to the configured depth\_levels. MDEntryType supports 0 (bid) and 1 (ask).
 
+Two options reproduce LP behavior that clients depend on:
+
+- `market_data.send_both_sides` (global, overridable per session) sends bid and offer entries whatever MDEntryTypes the request lists. oneZero does this, and the postprime price-gateway requests only 0 (bid) but drops any snapshot without both sides.
+- `quote_condition` per symbol is sent as QuoteCondition (276) on every bid and offer entry, e.g. A (open, tradable) or B (closed). Without it, tag 276 is not sent.
+
 ### 6.4 Publisher
 
-The publisher keeps a map of symbol → list of (sessionID, MDReqID). Each new quote is encoded once into the common fields; only the header is swapped per session before quickfix.SendToTarget. If a session is slow to send (its quickfixgo queue is full), the publisher drops that session's intermediate ticks and keeps only the latest one (conflation), so one slow client cannot slow down the others.
+The publisher keeps a map of symbol → list of (sessionID, MDReqID). Each session has its own writer goroutine; a newer tick for the same subscription and symbol replaces a waiting one (conflation), so one slow client cannot slow down the others.
+
+quickfix.SendToTarget never blocks: it appends to an unbounded queue, and while the connection is busy the session goroutine spins. The original design assumed it blocked; the load test (section 13) showed stale ticks piling up, order reports delayed by seconds and about ten cores busy. All application messages therefore go through per-session flow control: at most one message per session waits for the network (the connection wrapper reports each completed write), order messages go before market data, and nothing is queued for a session that is not logged on. Market data and U1 messages are not kept in the message store for resend; a ResendRequest gets a gap fill for them.
 
 ### 6.5 Runtime commands
 
-The following commands take effect immediately and are not written to YAML: pause/resume symbol, set\_price (force the mid to a level), spike (jump by a given percentage in a given direction, then continue with the model).
+The following commands take effect immediately and are not written to YAML: pause/resume symbol, set\_price (force the mid to a level), spike (jump by a given percentage in a given direction, then continue with the model), and quote\_cancel.
+
+quote\_cancel simulates the LP withdrawing quotes: mockfix drops the subscriptions to the given symbols (all symbols when none are given) and sends each affected client session a QuoteCancel (Z) with QuoteCancelType 1 (listed securities, with NoQuoteEntries) or 4 (all quotes). Clients have to subscribe again to receive prices, which tests their resubscribe path. The monitor session is never included.
 
 ### 6.6 Batching multiple symbols into one message
 
@@ -330,7 +341,7 @@ Each new order is checked against the rule list in ascending priority; the first
 
 Cancel and Replace also go through the rule engine with message\_type: F or G, so cancels can be rejected or replaces delayed by configuration.
 
-The MVP supports Market orders only. Orders with an OrdType other than 1 are rejected immediately with OrdRejReason=11 (unsupported order characteristic) before rules run; for G, only OrderQty may change. Limit, Stop, IOC and FOK are left for a later phase.
+The MVP supports Market orders only. Orders with an OrdType other than 1 are rejected immediately with OrdRejReason=11 (unsupported order characteristic) before rules run; for G, only OrderQty may change. Limit, Stop, IOC and FOK are left for a later phase. Phase 6 added Limit, Stop and Stop limit orders with Day, GTC, IOC and FOK (section 14.2).
 
 ### 7.2 Matching
 
@@ -605,13 +616,15 @@ REST serves only configuration and control commands; all realtime data goes over
 | POST | /api/symbols/{symbol}/resume | Runtime command: resume |
 | POST | /api/symbols/{symbol}/price | Runtime command: force price, body { mid } |
 | POST | /api/symbols/{symbol}/spike | Runtime command: body { percent, direction } |
+| POST | /api/symbols/{symbol}/quote-cancel | Runtime command: QuoteCancel for one symbol |
+| POST | /api/quote-cancel | Runtime command: body { symbols (empty: all quotes), session (optional) } |
 | GET, POST | /api/rules | List, add rules |
 | PUT, DELETE | /api/rules/{name} | Edit, delete a rule |
 | PUT | /api/rules/order | Bulk priority change (drag and drop) |
 | POST | /api/rules/test | Body is a sample order; returns the matching rule and its action chain |
 | GET | /api/sessions | Sessions, logon state, sequences in/out |
 | POST | /api/sessions/{id}/logout | Disconnect a session |
-| POST | /api/sessions/{id}/fault | Trigger an immediate fault (drop, seq\_gap) |
+| POST | /api/sessions/{id}/fault | Trigger an immediate fault, body { type: drop, seq\_gap or heartbeat\_miss } |
 | GET | /api/orders?session=&status=&limit= | Look up in-memory orders |
 | GET | /healthz, /metrics | Health check, Prometheus |
 
@@ -712,6 +725,7 @@ JSON logs via slog: session events (logon, logout, reject), config reloads (vers
 
 - No authentication for the Web UI, Admin API or /ws: mockfix is a test tool that runs only on developer machines, in CI or on the internal network.
 - The monitor acceptor binds only to 127.0.0.1; the gateway is the only permitted client.
+- The client acceptor can require TLS and client certificates (`server.fix.tls`, section 5.1); the Logon Password (554) is accepted without checking.
 - /ws accepts only MsgTypes V and U2 from the browser (section 8.3), so the UI cannot place orders on behalf of clients.
 - Mockfix uses no real data or accounts and must not be exposed to the public Internet.
 
@@ -754,12 +768,37 @@ Estimates assume one Go engineer familiar with FIX; phase 5 can run in parallel 
 
 | Question | Decision | Impact on the design |
 | --- | --- | --- |
-| FIX versions | FIX 4.4 only for now; multiple versions later | Dictionary and generated code are chosen per session (section 5.3); multi-version support in phase 6 |
-| Order types in the MVP | Market only | Other OrdTypes are rejected with OrdRejReason=11 (section 7.1); Limit, Stop, IOC, FOK in a later phase |
+| FIX versions | FIX 4.4 only for now; multiple versions later | Done in phase 6: per-session `version` FIX.4.2, FIX.4.4 or FIX.5.0SP2 (FIXT.1.1). Non-default versions are static acceptor sessions created at start (adding one needs a restart); FIX 4.2 ExecutionReports carry ExecTransType and ExecType 1/2 for fills; drop copies stay FIX 4.4 |
+| Order types in the MVP | Market only | Phase 6 added Limit, Stop and Stop limit with Day, GTC, IOC and FOK: unmarketable fill steps wait for the market, fills are clamped at the limit, IOC/FOK cancel what cannot fill; Day orders do not expire |
 | Do rules keep state | Message content only | Rules do not count orders or remember history (section 7.2) |
 | Persist sequences across restarts | Phase 7, with the WAL | The MVP uses MemoryStoreFactory; phase 7 replaces it with a WAL-backed store with retention and replay (section 15) |
 | Web UI authentication | Not needed, it is a test tool | No auth token; runs only on the internal network (section 12.4) |
 | Throughput | About 10 sessions; other targets unchanged | Updated in section 2.2 and the load test in section 13 |
+| Sending to slow clients | Per-session flow control instead of relying on quickfix.SendToTarget | One message in flight per session, orders first, market data conflated (section 6.4). Load test 10 × 200 × 25: 51,000 messages/s delivered, order handling p99 ≤ 0.1 ms |
+| Generated FIX code | Not committed | `fix/` is generated from spec/FIX44.xml by `make gen` / `go generate ./fix` |
+| Config edits from the UI | The draft is the YAML text, edited through a YAML document | Comments and layout survive; validation stays on the server (section 11) |
+| Rule values | side: BUY, SELL; ord\_type: MARKET, LIMIT, STOP, STOP\_LIMIT; time\_in\_force: DAY, GTC, IOC, FOK | Names only, no raw FIX values or regex for these fields |
+| TLS on the client acceptor | Supported (`server.fix.tls`) | Needed for clients configured for TLS LPs (section 5.1) |
+| Both sides in market data | Option `send_both_sides` | Matches LPs that ignore MDEntryTypes (section 6.3) |
+| QuoteCondition (276) | Per-symbol `quote_condition` | Clients that require 276=A to trade (section 6.3) |
+| QuoteCancel (Z) | Runtime command | Tests clients' resubscribe handling (section 6.5) |
+| Symbol names for a client | Kept in sync by the developer | mockfix does not read client product lists |
+
+### 14.3 Compatibility with the postprime-sec gateways
+
+mockfix is used as the LP (oneZero) for `order-gateway` and `price-gateway` of postprime-sec. What they rely on, and how mockfix covers it:
+
+| Client behavior | mockfix |
+| --- | --- |
+| quickfixgo initiator, FIX 4.4, TLS with a client certificate and no server verification | `server.fix.tls` with client\_auth none or request |
+| Separate sessions: PostPrimeTaker\_T ↔ TakaTradeUAT\_T (orders), PostPrimeTaker\_Q ↔ TakaTradeUAT\_Q (prices); ResetOnLogon/ResetOnLogout, Logon with ResetSeqNumFlag=Y and Password | Configured CompIDs; quickfixgo resets sequences; the password is not checked |
+| order-gateway: D Market, HandlInst=1, TimeInForce=FOK, 2-decimal OrderQty; waits up to 5 s for a final ExecutionReport (OrdStatus 2, 8, 4 or C) and reads LastPx, OrdRejReason, Text | Accepted; rules decide fill, reject, cancel or no answer (to test the 5 s timeout) |
+| price-gateway: one V per ticker, SubscriptionRequestType=1, MarketDepth=0, MDUpdateType=0, MDEntryType 0 only | W on every tick (full refresh) |
+| price-gateway drops W without both a bid and an offer, and treats a price as tradable only with 276=A on every entry | `send_both_sides: true` on the price session and `quote_condition: A` on the symbols |
+| price-gateway resubscribes after QuoteCancel type 4 (all quotes); type 1 is only logged | quote\_cancel runtime command |
+| Product tickers (e.g. XAUUSD, XAGUSD, XPTUSD, XPDUSD, CrudeOil) | Symbols in the mock config, kept in sync by the developer |
+
+An end-to-end test (`internal/app/postprime_test.go`) drives mockfix with clients configured like both gateways.
 
 ## 15. Persistence with a WAL (phase 7)
 
