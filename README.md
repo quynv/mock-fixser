@@ -151,3 +151,20 @@ Edits only change a draft; nothing reaches the server until **Apply**. The draft
 - **Order rules**: drag to reorder priorities, conditions as chips, action chains as timelines with total latency, `default_action`, list rules, and a rule tester that runs a sample order against the draft.
 - **FIX log**: the U1 mirror (turned on while the screen is open), filters by session, direction and MsgType, search, pause, and a tag-by-tag view with field and enum names.
 - **YAML**: the draft in Monaco, a diff against the running config, and version history with rollback.
+
+## Session faults
+
+Per client session, `faults` simulates problems from each logon (design doc, section 5.4):
+
+```yaml
+sessions:
+  - sender_comp_id: MOCKSRV
+    target_comp_id: CLIENT2
+    faults:
+      reject_logon: { text: "Try later" }       # answer Logon with Logout
+      drop_after: { messages: 100 }             # or { seconds: 30 }: close the TCP connection
+      seq_gap: { every: 500 }                   # skip a MsgSeqNum after every 500 application messages sent
+      heartbeat_miss: { after_seconds: 10 }     # stop heartbeats, also in answer to TestRequest
+```
+
+`POST /api/sessions/{id}/fault` with `{"type": "drop" | "seq_gap" | "heartbeat_miss"}` triggers one at once on a logged-on session; the Sessions screen has buttons for them.

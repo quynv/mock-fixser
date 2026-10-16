@@ -56,6 +56,8 @@ export const api = {
     request<RuleTestResult>("POST", "/api/rules/test", JSON.stringify(order), json),
   sessions: () => request<SessionInfo[]>("GET", "/api/sessions"),
   logout: (id: string) => request<unknown>("POST", `/api/sessions/${encodeURIComponent(id)}/logout`),
+  fault: (id: string, type: "drop" | "seq_gap" | "heartbeat_miss") =>
+    request<unknown>("POST", `/api/sessions/${encodeURIComponent(id)}/fault`, JSON.stringify({ type }), json),
   orders: (q: Record<string, string>) =>
     request<OrderView[]>("GET", `/api/orders?${new URLSearchParams(Object.entries(q).filter(([, v]) => v))}`),
   metrics: async () => (await fetch("/metrics")).text(),

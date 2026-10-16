@@ -310,7 +310,9 @@ func TestSessionsAndOrders(t *testing.T) {
 	}
 	e.status("POST", "/api/sessions/CLIENT1/logout", "", nil, http.StatusConflict)
 	e.status("POST", "/api/sessions/NOPE/logout", "", nil, http.StatusNotFound)
-	e.status("POST", "/api/sessions/CLIENT1/fault", "", nil, http.StatusNotImplemented)
+	e.status("POST", "/api/sessions/CLIENT1/fault", `{"type":"drop"}`, nil, http.StatusConflict)
+	e.status("POST", "/api/sessions/CLIENT1/fault", `{"type":"explode"}`, nil, http.StatusConflict) // offline first
+	e.status("POST", "/api/sessions/NOPE/fault", `{"type":"drop"}`, nil, http.StatusNotFound)
 
 	var orders []orderView
 	if r := e.do("GET", "/api/orders?session=CLIENT1&status=open&limit=10", "", nil, &orders); r.StatusCode != 200 || len(orders) != 0 {

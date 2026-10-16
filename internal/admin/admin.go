@@ -661,8 +661,30 @@ func (a *api) logout(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"logged_out": id.String()})
 }
 
-func (a *api) fault(w http.ResponseWriter, _ *http.Request) {
-	writeError(w, http.StatusNotImplemented, "not_implemented", "session fault simulation comes in phase 6", nil)
+// fault triggers a fault at once: {"type": "drop" | "seq_gap" | "heartbeat_miss"}.
+func (a *api) fault(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Type string `json:"type"`
+	}
+	if err := decodeJSON(r, &body); err != nil {
+		writeErr(w, err)
+		return
+	}
+	id, ok := a.sessionByID(r.PathValue("id"))
+	if !ok {
+		writeErr(w, config.ErrNotFound)
+		return
+	}
+	switch err := a.Server.TriggerFault(id, body.Type); {
+	case errors.Is(err, fixserver.ErrNotLoggedOn):
+		writeError(w, http.StatusConflict, "not_logged_on", err.Error(), nil)
+	case errors.Is(err, fixserver.ErrUnknownFault):
+		writeErr(w, badRequest("%v", err))
+	case err != nil:
+		writeErr(w, err)
+	default:
+		writeJSON(w, http.StatusOK, map[string]any{"session": id.String(), "fault": body.Type})
+	}
 }
 
 type orderView struct {

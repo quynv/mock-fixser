@@ -57,8 +57,41 @@ type FIXServer struct {
 type Session struct {
 	SenderCompID string             `yaml:"sender_comp_id" json:"sender_comp_id"`
 	TargetCompID string             `yaml:"target_comp_id" json:"target_comp_id"`
-	Faults       map[string]any     `yaml:"faults,omitempty" json:"faults,omitempty"`
+	Faults       *SessionFaults     `yaml:"faults,omitempty" json:"faults,omitempty"`
 	MarketData   *SessionMarketData `yaml:"market_data,omitempty" json:"market_data,omitzero"`
+}
+
+// SessionFaults simulates session problems (design doc, section 5.4). They
+// apply from each logon of the session.
+type SessionFaults struct {
+	// RejectLogon answers Logon with Logout and this text.
+	RejectLogon *RejectLogon `yaml:"reject_logon,omitempty" json:"reject_logon,omitempty"`
+	// DropAfter closes the TCP connection after a number of messages (both
+	// directions, from logon) or seconds.
+	DropAfter *DropAfter `yaml:"drop_after,omitempty" json:"drop_after,omitempty"`
+	// SeqGap skips one MsgSeqNum after every N messages sent, so the client
+	// has to send ResendRequest.
+	SeqGap *SeqGap `yaml:"seq_gap,omitempty" json:"seq_gap,omitempty"`
+	// HeartbeatMiss stops sending heartbeats (also answers to TestRequest)
+	// after a number of seconds from logon.
+	HeartbeatMiss *HeartbeatMiss `yaml:"heartbeat_miss,omitempty" json:"heartbeat_miss,omitempty"`
+}
+
+type RejectLogon struct {
+	Text string `yaml:"text,omitempty" json:"text,omitempty"`
+}
+
+type DropAfter struct {
+	Messages int `yaml:"messages,omitempty" json:"messages,omitempty"`
+	Seconds  int `yaml:"seconds,omitempty" json:"seconds,omitempty"`
+}
+
+type SeqGap struct {
+	Every int `yaml:"every" json:"every"`
+}
+
+type HeartbeatMiss struct {
+	AfterSeconds int `yaml:"after_seconds,omitempty" json:"after_seconds,omitempty"`
 }
 
 // SessionMarketData overrides market_data settings for one session. Unset

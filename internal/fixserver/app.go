@@ -19,6 +19,9 @@ type App struct {
 	mu       sync.Mutex
 	logged   map[quickfix.SessionID]bool
 	onLogout []func(quickfix.SessionID)
+	onLogon  []func(quickfix.SessionID)
+	// checkLogon may reject a Logon (simulated faults).
+	checkLogon func(*quickfix.Message, quickfix.SessionID) quickfix.MessageRejectError
 }
 
 func newApp(log *slog.Logger) *App {
@@ -37,8 +40,12 @@ func (a *App) OnLogon(id quickfix.SessionID) {
 	a.mu.Lock()
 	a.logged[id] = true
 	metrics.SessionsLoggedOn.Set(float64(len(a.logged)))
+	hooks := a.onLogon
 	a.mu.Unlock()
 	a.log.Info("session logon", "session", id.String())
+	for _, fn := range hooks {
+		fn(id)
+	}
 }
 
 func (a *App) OnLogout(id quickfix.SessionID) {
@@ -57,7 +64,10 @@ func (a *App) ToAdmin(*quickfix.Message, quickfix.SessionID) {}
 
 func (a *App) ToApp(*quickfix.Message, quickfix.SessionID) error { return nil }
 
-func (a *App) FromAdmin(*quickfix.Message, quickfix.SessionID) quickfix.MessageRejectError {
+func (a *App) FromAdmin(msg *quickfix.Message, id quickfix.SessionID) quickfix.MessageRejectError {
+	if a.checkLogon != nil {
+		return a.checkLogon(msg, id)
+	}
 	return nil
 }
 

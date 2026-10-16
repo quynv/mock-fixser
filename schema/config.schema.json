@@ -112,7 +112,37 @@
       "properties": {
         "sender_comp_id": { "$ref": "#/$defs/compID" },
         "target_comp_id": { "$ref": "#/$defs/compID" },
-        "faults": { "type": "object" },
+        "faults": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "reject_logon": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": { "text": { "type": "string" } }
+            },
+            "drop_after": {
+              "type": "object",
+              "additionalProperties": false,
+              "minProperties": 1,
+              "properties": {
+                "messages": { "type": "integer", "minimum": 1 },
+                "seconds": { "type": "integer", "minimum": 1 }
+              }
+            },
+            "seq_gap": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["every"],
+              "properties": { "every": { "type": "integer", "minimum": 1 } }
+            },
+            "heartbeat_miss": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": { "after_seconds": { "type": "integer", "minimum": 0 } }
+            }
+          }
+        },
         "market_data": {
           "type": "object",
           "additionalProperties": false,

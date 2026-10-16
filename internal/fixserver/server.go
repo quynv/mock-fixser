@@ -42,6 +42,10 @@ type Server struct {
 	conns map[quickfix.SessionID]net.Conn
 
 	tap atomic.Pointer[Tap]
+
+	// Session faults of the running config, and their state per logon.
+	faults      atomic.Pointer[map[quickfix.SessionID]*config.SessionFaults]
+	faultStates map[quickfix.SessionID]*faultState
 }
 
 // New builds the acceptors from cfg. Call Start to open the listeners.
@@ -55,9 +59,14 @@ func New(cfg *config.Config, log *slog.Logger) (*Server, error) {
 		beginString: cfg.Server.FIX.Version,
 		stores:      newStoreCache(quickfix.NewMemoryStoreFactory()),
 		conns:       map[quickfix.SessionID]net.Conn{},
+		faultStates: map[quickfix.SessionID]*faultState{},
 	}
 	s.setAllowed(cfg.Server.FIX.Sessions)
 
+	s.SetTap(nil)
+	s.app.checkLogon = s.checkLogon
+	s.app.onLogon = append(s.app.onLogon, s.startFaults)
+	s.app.onLogout = append(s.app.onLogout, s.stopFaults)
 	logs := slogLogFactory{log: log, tap: &s.tap}
 	cs, err := clientSettings(cfg.Server.FIX)
 	if err != nil {
@@ -67,6 +76,7 @@ func New(cfg *config.Config, log *slog.Logger) (*Server, error) {
 		return nil, err
 	}
 	s.client.SetConnectionValidator(validatorFunc(s.validate))
+	s.client.SetNewListenerCallback(newFaultListener)
 	for id := range cs.SessionSettings() {
 		s.static = append(s.static, id)
 	}
@@ -89,7 +99,16 @@ func New(cfg *config.Config, log *slog.Logger) (*Server, error) {
 }
 
 // SetTap installs the raw message tap (the monitor mirror).
-func (s *Server) SetTap(t Tap) { s.tap.Store(&t) }
+// The fault simulation always observes the traffic first.
+func (s *Server) SetTap(t Tap) {
+	all := Tap(func(id quickfix.SessionID, dir byte, raw []byte) {
+		s.observe(id, dir, raw)
+		if t != nil {
+			t(id, dir, raw)
+		}
+	})
+	s.tap.Store(&all)
+}
 
 // Router lets the engines register MsgType handlers (section 5.2).
 func (s *Server) Router() *quickfix.MessageRouter { return s.app.router }
@@ -142,21 +161,21 @@ func (s *Server) OnLogout(fn func(quickfix.SessionID)) {
 
 // SessionInfo is the admin view of a session.
 type SessionInfo struct {
-	ID            string         `json:"id"`
-	Kind          string         `json:"kind"` // client or monitor
-	SenderCompID  string         `json:"sender_comp_id"`
-	TargetCompID  string         `json:"target_comp_id"`
-	LoggedOn      bool           `json:"logged_on"`
-	NextSenderSeq int            `json:"next_sender_seq,omitempty"`
-	NextTargetSeq int            `json:"next_target_seq,omitempty"`
-	Remote        string         `json:"remote,omitempty"`
-	Faults        map[string]any `json:"faults,omitempty"`
+	ID            string                `json:"id"`
+	Kind          string                `json:"kind"` // client or monitor
+	SenderCompID  string                `json:"sender_comp_id"`
+	TargetCompID  string                `json:"target_comp_id"`
+	LoggedOn      bool                  `json:"logged_on"`
+	NextSenderSeq int                   `json:"next_sender_seq,omitempty"`
+	NextTargetSeq int                   `json:"next_target_seq,omitempty"`
+	Remote        string                `json:"remote,omitempty"`
+	Faults        *config.SessionFaults `json:"faults,omitempty"`
 }
 
 // Sessions lists the configured client sessions and the monitor session.
 func (s *Server) Sessions(cfg *config.Config) []SessionInfo {
 	var out []SessionInfo
-	add := func(kind string, k config.SessionKey, faults map[string]any) {
+	add := func(kind string, k config.SessionKey, faults *config.SessionFaults) {
 		id := sessionID(s.beginString, k)
 		info := SessionInfo{ID: id.String(), Kind: kind, SenderCompID: k.SenderCompID, TargetCompID: k.TargetCompID,
 			LoggedOn: s.app.loggedOn(id), Faults: faults}
@@ -221,10 +240,16 @@ func (s *Server) OnConfigChange(c config.Change) {
 
 func (s *Server) setAllowed(sessions []config.Session) {
 	m := make(map[quickfix.SessionID]bool, len(sessions))
+	f := make(map[quickfix.SessionID]*config.SessionFaults, len(sessions))
 	for _, cs := range sessions {
-		m[sessionID(s.beginString, cs.Key())] = true
+		id := sessionID(s.beginString, cs.Key())
+		m[id] = true
+		if cs.Faults != nil {
+			f[id] = cs.Faults
+		}
 	}
 	s.allowed.Store(&m)
+	s.faults.Store(&f)
 }
 
 func (s *Server) validate(conn net.Conn, id quickfix.SessionID) error {
