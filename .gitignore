@@ -12,7 +12,8 @@
 /web/dist/
 
 # Local tooling
-.claude/settings.local.json
+.claude/
+.code-review-graph/
 .DS_Store
 .idea/
 .vscode/

@@ -1,6 +1,6 @@
 # mockfix
 
-A simulated FIX 4.4 server written in Go. It streams prices for configured symbols, accepts orders and answers with ExecutionReports according to predefined rules. See [the design document](./Mock%20FIX%20Server%20—%20Design%20Document.md) for the full specification.
+A simulated FIX 4.4 server written in Go. It streams prices for configured symbols, accepts orders and answers with ExecutionReports according to predefined rules. See [the design document](./docs/Design%20Document.md) for the full specification.
 
 Status: phase 0 (setup). The server binary starts and stops but does not yet accept FIX sessions.
 
