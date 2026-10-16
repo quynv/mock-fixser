@@ -31,23 +31,34 @@ function priceFormat(tick?: number) {
 }
 
 const HISTORY = 20000;
+const LINES_KEY = "mockfix.chart.bidAsk";
+
+function readLinesPref(): boolean {
+  try {
+    return localStorage.getItem(LINES_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
 
 /**
- * Live chart of one symbol from the FIX stream: candles of the mid, bid and
- * ask lines, dashed min/max, and markers at fills from the drop copies, so
- * slippage against the feed is visible (section 11.3).
+ * Live chart of one symbol from the FIX stream: one candle of the mid per
+ * selected pace, updated in place by every tick until the next pace starts;
+ * optional bid and ask lines on the same time points; dashed min/max; and
+ * markers at fill prices from the drop copies (section 11.3).
  */
-export function PriceChart({ symbol, min, max, tickSize, intervals = [1, 5, 60] }: Props) {
+export function PriceChart({ symbol, min, max, tickSize, intervals = [1, 5, 15, 60, 300] }: Props) {
   const el = useRef<HTMLDivElement>(null);
   const [interval, setCandleSec] = useState(intervals[0]);
+  const [showLines, setShowLines] = useState(readLinesPref);
   const [last, setLast] = useState<Quote>();
   const [rejected, setRejected] = useState<string>();
   const ticks = useRef<Quote[]>([]);
   const api = useRef<{
     chart: IChartApi;
     candles: ISeriesApi<"Candlestick">;
-    bid: ISeriesApi<"Line">;
-    ask: ISeriesApi<"Line">;
+    bid?: ISeriesApi<"Line">;
+    ask?: ISeriesApi<"Line">;
     markers: ISeriesMarkersPluginApi<Time>;
     lines: IPriceLine[];
     builder: CandleBuilder;
@@ -62,7 +73,7 @@ export function PriceChart({ symbol, min, max, tickSize, intervals = [1, 5, 60] 
       autoSize: true,
       layout: { background: { type: ColorType.Solid, color: css("--panel") }, textColor: css("--muted") },
       grid: { vertLines: { color: css("--border") }, horzLines: { color: css("--border") } },
-      timeScale: { timeVisible: true, secondsVisible: interval < 60 },
+      timeScale: { timeVisible: true, secondsVisible: interval < 60, barSpacing: 12, rightOffset: 4 },
     });
     const candles = chart.addSeries(CandlestickSeries, {
       upColor: css("--buy"),
@@ -72,9 +83,10 @@ export function PriceChart({ symbol, min, max, tickSize, intervals = [1, 5, 60] 
       borderVisible: false,
       priceFormat: priceFormat(tickSize),
     });
+    // Bid and ask are optional and share the candles' time points.
     const line = { lineWidth: 1 as const, priceLineVisible: false, lastValueVisible: false, priceFormat: priceFormat(tickSize) };
-    const bid = chart.addSeries(LineSeries, { ...line, color: css("--buy") });
-    const ask = chart.addSeries(LineSeries, { ...line, color: css("--sell") });
+    const bid = showLines ? chart.addSeries(LineSeries, { ...line, color: css("--buy") }) : undefined;
+    const ask = showLines ? chart.addSeries(LineSeries, { ...line, color: css("--sell") }) : undefined;
     api.current = {
       chart, candles, bid, ask, lines: [],
       markers: createSeriesMarkers(candles, []),
@@ -86,7 +98,7 @@ export function PriceChart({ symbol, min, max, tickSize, intervals = [1, 5, 60] 
       chart.remove();
       api.current = null;
     };
-  }, [symbol, interval, tickSize]);
+  }, [symbol, interval, tickSize, showLines]);
 
   // Dashed min/max lines.
   useEffect(() => {
@@ -99,7 +111,7 @@ export function PriceChart({ symbol, min, max, tickSize, intervals = [1, 5, 60] 
         a.lines.push(a.candles.createPriceLine({ price, title, color: css("--muted"), lineStyle: LineStyle.Dashed, lineWidth: 1 }));
       }
     }
-  }, [min, max, symbol, interval]);
+  }, [min, max, symbol, interval, showLines]);
 
   // Live data.
   useEffect(() => {
@@ -146,19 +158,32 @@ export function PriceChart({ symbol, min, max, tickSize, intervals = [1, 5, 60] 
     }
     markers.sort((x, y) => Number(x.time) - Number(y.time));
     a.markers.setMarkers(markers);
-  }, [reports, symbol, interval]);
+  }, [reports, symbol, interval, showLines]);
 
   function draw(q: Quote) {
     const a = api.current;
     const m = mid(q);
     if (!a || m === undefined || q.time < a.lastTime) return; // series need increasing time
     a.lastTime = q.time;
-    const sec = Math.floor(q.time / 1000) as UTCTimestamp;
+    // Same bucket: the current candle moves; a new bucket starts a candle.
     const c = a.builder.add(q.time, m);
-    a.candles.update({ ...c, time: c.time as UTCTimestamp });
-    if (q.bid !== undefined) a.bid.update({ time: sec, value: q.bid });
-    if (q.ask !== undefined) a.ask.update({ time: sec, value: q.ask });
+    const time = c.time as UTCTimestamp;
+    a.candles.update({ ...c, time });
+    if (q.bid !== undefined) a.bid?.update({ time, value: q.bid });
+    if (q.ask !== undefined) a.ask?.update({ time, value: q.ask });
   }
+
+  const toggleLines = () => {
+    const next = !showLines;
+    setShowLines(next);
+    try {
+      localStorage.setItem(LINES_KEY, next ? "1" : "0");
+    } catch {
+      /* private mode: the choice lasts for this page only */
+    }
+  };
+
+  const label = (i: number) => (i < 60 ? `${i}s` : `${i / 60}m`);
 
   return (
     <div>
@@ -175,9 +200,14 @@ export function PriceChart({ symbol, min, max, tickSize, intervals = [1, 5, 60] 
           )}
         </span>
         <span className="row">
+          <label className="row muted" style={{ gap: 4 }}>
+            <input type="checkbox" checked={showLines} onChange={toggleLines} />
+            Bid/Ask lines
+          </label>
+          <span className="muted">Candle</span>
           {intervals.map((i) => (
-            <button key={i} className={i === interval ? "primary" : ""} onClick={() => setCandleSec(i)}>
-              {i < 60 ? `${i}s` : `${i / 60}m`}
+            <button key={i} className={i === interval ? "primary" : ""} onClick={() => setCandleSec(i)} aria-pressed={i === interval}>
+              {label(i)}
             </button>
           ))}
         </span>
