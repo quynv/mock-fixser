@@ -52,7 +52,7 @@ func TestRuleMatching(t *testing.T) {
     actions: [ { type: ignore } ]
   - name: vip
     priority: 7
-    match: { tags: { "9001": VIP }, side: [SELL, SELL_SHORT] }
+    match: { tags: { "9001": VIP }, side: [SELL] }
     actions: [ { type: ack } ]
   - name: partial-then-fill-aapl
     priority: 10
@@ -79,10 +79,10 @@ default_action:
 		{"regex", req(func(r *Request) { r.ClOrdID = "TIMEOUT-1" }), "timeout-test"},
 		{"chain", req(nil), "partial-then-fill-aapl"},
 		{"side list and tag", req(func(r *Request) {
-			r.Side = "5"
+			r.Side = "2"
 			r.Tag = func(tag int) (string, bool) { return "VIP", tag == 9001 }
 		}), "vip"},
-		{"tag missing falls through", req(func(r *Request) { r.Side = "5" }), DefaultRuleName},
+		{"tag missing falls through", req(func(r *Request) { r.Side = "2" }), DefaultRuleName},
 		{"other comp id", req(func(r *Request) { r.CompID = "CLIENT2" }), DefaultRuleName},
 		{"cancel rule", req(func(r *Request) { r.MsgType = "F" }), "slow-cancel"},
 		{"replace has no rule", req(func(r *Request) { r.MsgType = "G" }), ""},
@@ -149,6 +149,18 @@ func TestRuleValidationErrors(t *testing.T) {
 `, "order_rules[0].match.cl_ord_id", 10},
 		{"unknown side", `order_rules:
   - { name: r, priority: 1, match: { side: UP }, actions: [ { type: ack } ] }
+`, "order_rules[0].match.side", 8},
+		{"side outside BUY/SELL", `order_rules:
+  - { name: r, priority: 1, match: { side: [BUY, SELL_SHORT] }, actions: [ { type: ack } ] }
+`, "order_rules[0].match.side", 8},
+		{"raw FIX side", `order_rules:
+  - { name: r, priority: 1, match: { side: "1" }, actions: [ { type: ack } ] }
+`, "order_rules[0].match.side", 8},
+		{"ord_type other than MARKET", `order_rules:
+  - { name: r, priority: 1, match: { ord_type: LIMIT }, actions: [ { type: ack } ] }
+`, "order_rules[0].match.ord_type", 8},
+		{"regex on side", `order_rules:
+  - { name: r, priority: 1, match: { side: { regex: "B.*" } }, actions: [ { type: ack } ] }
 `, "order_rules[0].match.side", 8},
 		{"bad operator", `order_rules:
   - { name: r, priority: 1, match: { qty: { above: 5 } }, actions: [ { type: ack } ] }

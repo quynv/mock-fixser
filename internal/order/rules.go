@@ -10,6 +10,7 @@ import (
 	"slices"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/shopspring/decimal"
@@ -246,12 +247,22 @@ var stringFields = map[string]strField{
 	"comp_id":   func(r Request) string { return r.CompID },
 }
 
-var sideNames = map[string]string{
-	"BUY": "1", "SELL": "2", "BUY_MINUS": "3", "SELL_PLUS": "4", "SELL_SHORT": "5", "SELL_SHORT_EXEMPT": "6",
-}
+// Rule values for side and ord_type, mapped to FIX values. The MVP accepts
+// Market orders only, so MARKET is the only ord_type.
+var (
+	sideNames    = enumNames{"BUY": "1", "SELL": "2"}
+	ordTypeNames = enumNames{"MARKET": "1"}
+)
 
-var ordTypeNames = map[string]string{
-	"MARKET": "1", "LIMIT": "2", "STOP": "3", "STOP_LIMIT": "4",
+type enumNames map[string]string
+
+func (n enumNames) allowed() string {
+	keys := make([]string, 0, len(n))
+	for k := range n {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return strings.Join(keys, ", ")
 }
 
 func compileCond(key string, v any) (cond, error) {
@@ -287,7 +298,7 @@ func compileCond(key string, v any) (cond, error) {
 	if !ok {
 		return nil, fmt.Errorf("unknown match field %q", key)
 	}
-	var names map[string]string
+	var names enumNames
 	switch key {
 	case "side":
 		names = sideNames
@@ -314,7 +325,9 @@ func (m strMatch) ok(s string) bool {
 	return slices.Contains(m.values, s)
 }
 
-func compileStr(v any, names map[string]string) (strMatch, error) {
+// compileStr compiles a value, a list or { regex }. With names, only the
+// listed names are accepted (no regex).
+func compileStr(v any, names enumNames) (strMatch, error) {
 	mapName := func(s string) (string, error) {
 		if names == nil {
 			return s, nil
@@ -322,15 +335,13 @@ func compileStr(v any, names map[string]string) (strMatch, error) {
 		if fix, ok := names[s]; ok {
 			return fix, nil
 		}
-		for _, fix := range names {
-			if fix == s { // raw FIX value
-				return s, nil
-			}
-		}
-		return "", fmt.Errorf("unknown value %q", s)
+		return "", fmt.Errorf("unknown value %q (allowed: %s)", s, names.allowed())
 	}
 	switch x := v.(type) {
 	case map[string]any:
+		if names != nil {
+			return strMatch{}, fmt.Errorf("expected a value or a list of %s", names.allowed())
+		}
 		re, ok := x["regex"]
 		if !ok || len(x) != 1 {
 			return strMatch{}, fmt.Errorf("expected a value, a list, or { regex: ... }")

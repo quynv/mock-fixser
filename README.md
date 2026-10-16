@@ -75,8 +75,8 @@ A new order is matched once against `order_rules` in ascending `priority`; the f
 | Field | Forms |
 | --- | --- |
 | `symbol`, `account`, `cl_ord_id`, `comp_id` | value, list, `{ regex: "..." }` |
-| `side` | `BUY`, `SELL`, `BUY_MINUS`, `SELL_PLUS`, `SELL_SHORT`, `SELL_SHORT_EXEMPT` (or the FIX value), or a list |
-| `ord_type` | `MARKET`, `LIMIT`, `STOP`, `STOP_LIMIT`, or a list |
+| `side` | `BUY` or `SELL`, or a list |
+| `ord_type` | `MARKET` (the only supported order type) |
 | `qty`, `price` | number, or `{ gt, gte, lt, lte, eq }` |
 | `tags` | `{ "9001": VIP }`, each value in any string form |
 | `probability` | `0.2`: a stable 20% of orders, decided by hashing the rule name, CompID and ClOrdID |
