@@ -16,12 +16,14 @@ Status: phase 0 (setup). The server binary starts and stops but does not yet acc
 | `cmd/mockfix/` | Server entry point |
 | `internal/` | Server packages (`fixserver`, and later `config`, `marketdata`, `order`, ...) |
 | `spec/FIX44.xml` | quickfixgo FIX44 dictionary plus U1 MirrorLog, U2 MonitorControl and tags 5001–5006 |
-| `fix/` | Go packages generated from `spec/FIX44.xml` (`fix44`, `field`, `tag`, `enum`); do not edit by hand |
+| `fix/` | Go packages generated from `spec/FIX44.xml` (`fix44`, `field`, `tag`, `enum`); not committed, created by `make gen` |
 
 ## Commands
 
+The FIX packages in `fix/` are generated, not committed. `make build`, `make test` and `make vet` generate them first (only when `spec/FIX44.xml` changed). Without make, run `go generate ./fix` once after cloning.
+
 ```sh
-make gen     # regenerate fix/ after editing spec/FIX44.xml
+make gen     # generate fix/ from spec/FIX44.xml
 make build   # static binary in bin/mockfix
 make test    # go test -race ./...
 make docker  # build the mockfix image

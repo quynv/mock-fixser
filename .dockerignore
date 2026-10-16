@@ -3,3 +3,7 @@
 bin
 web/node_modules
 *.pdf
+fix/fix44
+fix/field
+fix/tag
+fix/enum
