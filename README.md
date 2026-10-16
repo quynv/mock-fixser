@@ -50,7 +50,45 @@ make docker     # build the mockfix image
 
 For UI development, run mockfix, then `cd web && npm run dev`: Vite serves the UI with hot reload and proxies `/api`, `/ws` and `/metrics` to `http://localhost:8080` (override with `MOCKFIX_URL`). Before the first `npm run dev`, generate the dictionary with `make web/src/fix/dict.json`. The first `make e2e` needs `cd web && npx playwright install chromium`.
 
-Run with `bin/mockfix --config configs/mock.yaml`. Flags: `--log-level`, `--no-ui`, `--pprof` (serve `/debug/pprof` on the HTTP port), `--version`.
+## Run locally
+
+### Binary
+
+```sh
+make build                                   # UI + binary (or make build-go without Node.js)
+bin/mockfix --config configs/mock.yaml
+```
+
+Run it from the repository root: the sample config refers to `spec/FIX44.xml` and `data/aapl.csv` by relative paths. Flags: `--config`, `--log-level` (debug, info, warn, error), `--no-ui` (no HTTP server or gateway, for CI), `--pprof` (serve `/debug/pprof` on the HTTP port), `--version`.
+
+### Docker
+
+```sh
+make docker                                  # builds mockfix:<git version>
+docker tag mockfix:$(git describe --tags --always --dirty) mockfix:latest
+docker run -d --name mockfix \
+  -p 9876:9876 -p 8080:8080 \
+  -v "$PWD/configs:/app/configs" \
+  -v "$PWD/data:/app/data" \
+  mockfix:latest
+```
+
+The image reads `/app/configs/mock.yaml`; `data/` holds replay files. Port 9877 (the monitor session) is not published: only the built-in gateway uses it. Applying changes from the UI or the API writes to the mounted `configs/mock.yaml` and creates `configs/history/`; mount a copy of `configs/` to keep the repository file unchanged.
+
+```sh
+docker logs -f mockfix                       # logs
+docker restart mockfix                       # apply changes reported as restart_required
+docker stop mockfix && docker rm mockfix     # stop and remove
+```
+
+### Endpoints
+
+| What | Where |
+| --- | --- |
+| FIX acceptor (clients) | `localhost:9876`, sessions `MOCKSRV` ↔ `CLIENT1`, `CLIENT2` in the sample config |
+| Web UI | http://localhost:8080 |
+| REST API | http://localhost:8080/api/ (e.g. `/api/sessions`, `/api/config.yaml`) |
+| Health, metrics | http://localhost:8080/healthz, http://localhost:8080/metrics |
 
 ## Configuration
 
