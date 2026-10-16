@@ -47,6 +47,7 @@ make build-go   # binary only (no Node.js), with whatever is in web/dist
 make test       # go test -race ./...
 make test-web   # UI unit tests (Vitest)
 make e2e        # Playwright test of the Apply flow against a real mockfix
+make dist       # release archives for Linux, macOS and Windows in dist/ (run make web first)
 make docker     # build the mockfix image
 ```
 
@@ -62,6 +63,16 @@ bin/mockfix --config configs/mock.yaml
 ```
 
 Run it from the repository root: the sample config refers to `spec/FIX44.xml` and `data/aapl.csv` by relative paths. Flags: `--config`, `--log-level` (debug, info, warn, error), `--no-ui` (no HTTP server or gateway, for CI), `--pprof` (serve `/debug/pprof` on the HTTP port), `--version`.
+
+### Release archive
+
+Download an archive for your platform from [Releases](https://github.com/quynv/mock-fixser/releases), unpack it and run `./mockfix --config configs/mock.yaml` inside the unpacked folder. Each archive holds the binary with the UI embedded, `spec/`, the sample `configs/mock.yaml`, `data/aapl.csv`, the README and the license; `checksums.txt` lists the SHA-256 of every archive.
+
+To publish a release, push a version tag. The Release workflow runs CI, builds the archives with `make dist` and creates the GitHub release with generated notes; a tag with a suffix such as `v0.7.0-rc.1` becomes a pre-release.
+
+```sh
+git tag v0.7.0 && git push origin v0.7.0
+```
 
 ### Docker
 
