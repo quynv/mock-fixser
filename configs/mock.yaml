@@ -67,3 +67,21 @@ order_rules:
 default_action:
   - { type: ack, delay_ms: 20 }
   - { type: fill, delay_ms: 100 }
+
+order_lists:
+  enabled: true
+  max_orders_per_list: 100
+  ack: list_status              # list_status | none
+  report: per_order_er          # per_order_er | list_status | both
+  list_status_interval_ms: 500  # when report includes list_status: send an aggregated N periodically, only on change
+  final_list_status: true       # send N with ListStatusType=5 (All done) once every order is closed
+
+list_rules:
+  - name: reject-big-list
+    priority: 1
+    match: { tot_no_orders: { gt: 50 } }
+    action: { type: reject_list, text: "List too large" }
+  - name: slow-list
+    priority: 10
+    match: { list_id: { regex: "^SLOW-" } }
+    action: { type: delay_ack, delay_ms: 1000 }

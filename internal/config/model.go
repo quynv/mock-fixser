@@ -13,6 +13,32 @@ type Config struct {
 	Symbols       []Symbol   `yaml:"symbols" json:"symbols"`
 	OrderRules    []Rule     `yaml:"order_rules,omitempty" json:"order_rules,omitempty"`
 	DefaultAction []Action   `yaml:"default_action,omitempty" json:"default_action,omitempty"`
+	OrderLists    OrderLists `yaml:"order_lists,omitempty" json:"order_lists,omitzero"`
+	ListRules     []ListRule `yaml:"list_rules,omitempty" json:"list_rules,omitempty"`
+}
+
+// OrderLists configures NewOrderList (E) handling (section 7.6).
+type OrderLists struct {
+	// Enabled defaults to true; when false, E, K and M get
+	// BusinessMessageReject.
+	Enabled              *bool  `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+	MaxOrdersPerList     int    `yaml:"max_orders_per_list" json:"max_orders_per_list"`
+	Ack                  string `yaml:"ack" json:"ack"`       // list_status | none
+	Report               string `yaml:"report" json:"report"` // per_order_er | list_status | both
+	ListStatusIntervalMs int    `yaml:"list_status_interval_ms" json:"list_status_interval_ms"`
+	FinalListStatus      *bool  `yaml:"final_list_status,omitempty" json:"final_list_status,omitempty"`
+}
+
+func (l OrderLists) IsEnabled() bool        { return l.Enabled == nil || *l.Enabled }
+func (l OrderLists) SendsFinalStatus() bool { return l.FinalListStatus == nil || *l.FinalListStatus }
+
+// ListRule matches a whole list; its single action is reject_list or
+// delay_ack.
+type ListRule struct {
+	Name     string         `yaml:"name" json:"name"`
+	Priority int            `yaml:"priority" json:"priority"`
+	Match    map[string]any `yaml:"match,omitempty" json:"match,omitempty"`
+	Action   Action         `yaml:"action" json:"action"`
 }
 
 type Server struct {

@@ -30,6 +30,27 @@ type Request struct {
 	Qty     decimal.Decimal
 	Price   *decimal.Decimal
 	Tag     func(tag int) (string, bool)
+
+	// Set for orders that arrive in a NewOrderList (section 7.6).
+	InList    bool
+	ListID    string
+	ListSeqNo int
+}
+
+// ListRequest is what list_rules match against.
+type ListRequest struct {
+	ListID      string
+	CompID      string
+	TotNoOrders int
+}
+
+// ListAction is the outcome of list_rules: reject the list, or delay its
+// acknowledgement.
+type ListAction struct {
+	Rule  string
+	Type  string // "", reject_list or delay_ack
+	Delay time.Duration
+	Text  string
 }
 
 // Step is one compiled action of a chain (section 7.3).
@@ -53,10 +74,38 @@ type rule struct {
 	steps    []Step
 }
 
-// RuleSet is an immutable compiled order_rules + default_action.
+// RuleSet is an immutable compiled order_rules + default_action +
+// list_rules, with the order_lists settings.
 type RuleSet struct {
 	rules         []rule
 	defaultAction []Step
+	listRules     []listRule
+	Lists         config.OrderLists
+}
+
+type listRule struct {
+	name     string
+	priority int
+	conds    []listCond
+	action   ListAction
+}
+
+// MatchList returns the first matching list rule's action, or an empty
+// action when none matches.
+func (rs *RuleSet) MatchList(r ListRequest) ListAction {
+	for _, lr := range rs.listRules {
+		ok := true
+		for _, c := range lr.conds {
+			if !c(r) {
+				ok = false
+				break
+			}
+		}
+		if ok {
+			return lr.action
+		}
+	}
+	return ListAction{}
 }
 
 // DefaultRuleName names the outcome when no rule matches a D.
@@ -134,7 +183,71 @@ func Compile(cfg *config.Config) (*RuleSet, []config.FieldError) {
 	if len(cfg.DefaultAction) == 0 {
 		rs.defaultAction = builtinDefault
 	}
+
+	rs.Lists = cfg.OrderLists
+	for i, r := range cfg.ListRules {
+		rs.listRules = append(rs.listRules, compileListRule(fmt.Sprintf("list_rules[%d]", i), r, add))
+	}
+	sort.SliceStable(rs.listRules, func(i, j int) bool { return rs.listRules[i].priority < rs.listRules[j].priority })
 	return rs, errs
+}
+
+type listCond func(ListRequest) bool
+
+func compileListRule(p string, r config.ListRule, add func(string, string, ...any)) listRule {
+	lr := listRule{name: r.Name, priority: r.Priority, action: ListAction{Rule: r.Name, Type: r.Action.Type}}
+	keys := make([]string, 0, len(r.Match))
+	for k := range r.Match {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		kp := p + ".match." + k
+		switch k {
+		case "tot_no_orders":
+			c, err := compileNum(k, r.Match[k])
+			if err != nil {
+				add(kp, "%v", err)
+				continue
+			}
+			nc := c.(numCond)
+			lr.conds = append(lr.conds, func(l ListRequest) bool {
+				return nc.match("", Request{Qty: decimal.NewFromInt(int64(l.TotNoOrders))})
+			})
+		case "list_id", "comp_id":
+			m, err := compileStr(r.Match[k], nil)
+			if err != nil {
+				add(kp, "%v", err)
+				continue
+			}
+			if k == "list_id" {
+				lr.conds = append(lr.conds, func(l ListRequest) bool { return m.ok(l.ListID) })
+			} else {
+				lr.conds = append(lr.conds, func(l ListRequest) bool { return m.ok(l.CompID) })
+			}
+		default:
+			add(kp, "unknown list match field %q (use tot_no_orders, list_id, comp_id)", k)
+		}
+	}
+	allowed := map[string]map[string]bool{"reject_list": {"text": true}, "delay_ack": {"delay_ms": true}}
+	for k, v := range r.Action.Params {
+		kp := p + ".action." + k
+		if !allowed[r.Action.Type][k] {
+			add(kp, "unknown parameter %q for action %s", k, r.Action.Type)
+			continue
+		}
+		switch k {
+		case "text":
+			lr.action.Text, _ = v.(string)
+		case "delay_ms":
+			n, ok := asInt(v)
+			if !ok || n < 0 {
+				add(kp, "delay_ms must be a non-negative integer")
+			}
+			lr.action.Delay = time.Duration(n) * time.Millisecond
+		}
+	}
+	return lr
 }
 
 var stepsAllowed = map[string]map[string]bool{
@@ -245,7 +358,12 @@ var stringFields = map[string]strField{
 	"account":   func(r Request) string { return r.Account },
 	"cl_ord_id": func(r Request) string { return r.ClOrdID },
 	"comp_id":   func(r Request) string { return r.CompID },
+	"list_id":   func(r Request) string { return r.ListID },
 }
+
+type condFunc func(Request) bool
+
+func (f condFunc) match(_ string, r Request) bool { return f(r) }
 
 // Rule values for side and ord_type, mapped to FIX values. The MVP accepts
 // Market orders only, so MARKET is the only ord_type.
@@ -275,6 +393,21 @@ func compileCond(key string, v any) (cond, error) {
 			return nil, fmt.Errorf("probability must be a number in [0, 1]")
 		}
 		return probCond(p), nil
+	case "list_seq_no":
+		c, err := compileNum(key, v)
+		if err != nil {
+			return nil, err
+		}
+		nc := c.(numCond)
+		return condFunc(func(r Request) bool {
+			return r.InList && nc.match("", Request{Qty: decimal.NewFromInt(int64(r.ListSeqNo))})
+		}), nil
+	case "in_list":
+		b, ok := v.(bool)
+		if !ok {
+			return nil, fmt.Errorf("in_list must be true or false")
+		}
+		return condFunc(func(r Request) bool { return r.InList == b }), nil
 	case "tags":
 		m, ok := v.(map[string]any)
 		if !ok {

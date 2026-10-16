@@ -65,7 +65,39 @@
       "type": "array",
       "items": { "$ref": "#/$defs/rule" }
     },
-    "default_action": { "$ref": "#/$defs/actions" }
+    "default_action": { "$ref": "#/$defs/actions" },
+    "order_lists": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "max_orders_per_list": { "type": "integer", "minimum": 1 },
+        "ack": { "enum": ["list_status", "none"] },
+        "report": { "enum": ["per_order_er", "list_status", "both"] },
+        "list_status_interval_ms": { "type": "integer", "minimum": 0 },
+        "final_list_status": { "type": "boolean" }
+      }
+    },
+    "list_rules": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "priority", "action"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "priority": { "type": "integer" },
+          "match": { "type": "object" },
+          "action": {
+            "type": "object",
+            "required": ["type"],
+            "properties": {
+              "type": { "enum": ["reject_list", "delay_ack"] }
+            }
+          }
+        }
+      }
+    }
   },
   "$defs": {
     "hostPort": {

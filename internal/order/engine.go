@@ -41,6 +41,7 @@ type Engine struct {
 	book     *book
 	orderSeq uint64
 	execSeq  uint64
+	massSeq  uint64
 	outboxes map[quickfix.SessionID]*outbox
 }
 
@@ -83,6 +84,10 @@ func (e *Engine) Route(r *quickfix.MessageRouter) {
 	r.AddRoute(quickfix.BeginStringFIX44, "F", e.handleCancel)
 	r.AddRoute(quickfix.BeginStringFIX44, "G", e.handleReplace)
 	r.AddRoute(quickfix.BeginStringFIX44, "H", e.handleStatus)
+	r.AddRoute(quickfix.BeginStringFIX44, "E", e.handleNewList)
+	r.AddRoute(quickfix.BeginStringFIX44, "K", e.handleListCancel)
+	r.AddRoute(quickfix.BeginStringFIX44, "M", e.handleListStatusRequest)
+	r.AddRoute(quickfix.BeginStringFIX44, "q", e.handleMassCancel)
 }
 
 // Close stops the session outboxes.
@@ -111,16 +116,26 @@ func (e *Engine) Orders(id quickfix.SessionID) []Order {
 	return out
 }
 
-// incoming wraps a received message for field access.
-type incoming struct{ m *quickfix.Message }
+// fieldGetter is a message body, header or repeating group entry.
+type fieldGetter interface {
+	GetString(quickfix.Tag) (string, quickfix.MessageRejectError)
+}
+
+// incoming wraps a received message (or one NewOrderList entry) for field
+// access.
+type incoming struct {
+	body, header fieldGetter
+}
+
+func msgFields(m *quickfix.Message) incoming { return incoming{body: m.Body, header: m.Header} }
 
 func (in incoming) str(t quickfix.Tag) string {
-	v, _ := in.m.Body.GetString(t)
+	v, _ := in.body.GetString(t)
 	return v
 }
 
 func (in incoming) dec(t quickfix.Tag) (decimal.Decimal, bool) {
-	v, rerr := in.m.Body.GetString(t)
+	v, rerr := in.body.GetString(t)
 	if rerr != nil {
 		return decimal.Decimal{}, false
 	}
@@ -138,11 +153,13 @@ func (in incoming) request(msgType string, id quickfix.SessionID) Request {
 		Account: in.str(tag.Account),
 		ClOrdID: in.str(tag.ClOrdID),
 		Tag: func(t int) (string, bool) {
-			if v, err := in.m.Body.GetString(quickfix.Tag(t)); err == nil {
+			if v, err := in.body.GetString(quickfix.Tag(t)); err == nil {
 				return v, true
 			}
-			if v, err := in.m.Header.GetString(quickfix.Tag(t)); err == nil {
-				return v, true
+			if in.header != nil {
+				if v, err := in.header.GetString(quickfix.Tag(t)); err == nil {
+					return v, true
+				}
 			}
 			return "", false
 		},
@@ -155,7 +172,7 @@ func (in incoming) request(msgType string, id quickfix.SessionID) Request {
 }
 
 func (e *Engine) handleNew(msg *quickfix.Message, id quickfix.SessionID) quickfix.MessageRejectError {
-	in := incoming{msg}
+	in := msgFields(msg)
 	req := in.request("D", id)
 	now := e.sched.Now()
 
@@ -175,28 +192,35 @@ func (e *Engine) handleNew(msg *quickfix.Message, id quickfix.SessionID) quickfi
 		e.rejectNewLocked(o, enum.OrdRejReason_DUPLICATE, "Duplicate ClOrdID")
 		return nil
 	}
+	e.newOrderIDLocked(o)
+	e.book.add(o)
+	e.acceptLocked(o, req, e.rules.Load(), now)
+	return nil
+}
+
+func (e *Engine) newOrderIDLocked(o *Order) {
 	e.orderSeq++
+	o.seq = e.orderSeq
 	o.OrderID = fmt.Sprintf("ORD-%d", e.orderSeq)
+}
+
+// acceptLocked runs the per-order checks of section 7.1, then matches the
+// rules and schedules the action chain. o is already in the book.
+func (e *Engine) acceptLocked(o *Order, req Request, rs *RuleSet, now time.Time) {
 	switch _, _, known := e.quotes.Last(req.Symbol); {
 	case !req.Qty.IsPositive():
-		e.book.add(o)
 		e.rejectNewLocked(o, enum.OrdRejReason_INCORRECTQUANTITY, "OrderQty must be positive")
-		return nil
+		return
 	case req.OrdType != string(enum.OrdType_MARKET):
-		e.book.add(o)
 		e.rejectNewLocked(o, enum.OrdRejReason_UNSUPPORDERCHAR, "Only market orders (OrdType=1) are supported")
-		return nil
+		return
 	case !known:
-		e.book.add(o)
 		e.rejectNewLocked(o, enum.OrdRejReason_UNKNOWNSYM, "Unknown symbol")
-		return nil
+		return
 	}
-
-	name, steps := e.rules.Load().Match(req)
+	name, steps := rs.Match(req)
 	o.Rule = name
-	e.book.add(o)
 	e.scheduleLocked(o, steps, now)
-	return nil
 }
 
 func (e *Engine) rejectNewLocked(o *Order, reason enum.OrdRejReason, text string) {
@@ -342,7 +366,7 @@ func fillRand(cfg config.Symbol, o *Order) *rand.Rand {
 }
 
 func (e *Engine) handleCancel(msg *quickfix.Message, id quickfix.SessionID) quickfix.MessageRejectError {
-	in := incoming{msg}
+	in := msgFields(msg)
 	orig, clOrdID := in.str(tag.OrigClOrdID), in.str(tag.ClOrdID)
 
 	e.mu.Lock()
@@ -363,13 +387,13 @@ func (e *Engine) handleCancel(msg *quickfix.Message, id quickfix.SessionID) quic
 		e.book.index(o, clOrdID)
 		o.close(enum.OrdStatus_CANCELED)
 		e.book.markClosed(o)
-		e.reportLocked(o, enum.ExecType_CANCELED, nil)
+		e.reportLocked(o, enum.ExecType_CANCELED, solicited)
 	})
 	return nil
 }
 
 func (e *Engine) handleReplace(msg *quickfix.Message, id quickfix.SessionID) quickfix.MessageRejectError {
-	in := incoming{msg}
+	in := msgFields(msg)
 	orig, clOrdID := in.str(tag.OrigClOrdID), in.str(tag.ClOrdID)
 	newQty, _ := in.dec(tag.OrderQty)
 
@@ -402,7 +426,7 @@ func (e *Engine) handleReplace(msg *quickfix.Message, id quickfix.SessionID) qui
 		o.OrderQty = newQty
 		o.LeavesQty = newQty.Sub(o.CumQty)
 		// Remaining steps keep running and read the new quantities.
-		e.reportLocked(o, enum.ExecType_REPLACED, nil)
+		e.reportLocked(o, enum.ExecType_REPLACED, solicited)
 	})
 	return nil
 }
@@ -438,7 +462,7 @@ func (e *Engine) decideLocked(o *Order, req Request, to enum.CxlRejResponseTo, o
 }
 
 func (e *Engine) handleStatus(msg *quickfix.Message, id quickfix.SessionID) quickfix.MessageRejectError {
-	in := incoming{msg}
+	in := msgFields(msg)
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	var o *Order
@@ -453,10 +477,10 @@ func (e *Engine) handleStatus(msg *quickfix.Message, id quickfix.SessionID) quic
 	if o == nil {
 		unknown := &Order{OrderID: "NONE", Session: id, ClOrdID: in.str(tag.ClOrdID), Symbol: in.str(tag.Symbol),
 			Side: in.str(tag.Side), Status: enum.OrdStatus_REJECTED}
-		e.reportLocked(unknown, enum.ExecType_ORDERSTATUS, func(r *erFields) { r.text = "Unknown order" })
+		e.reportLocked(unknown, enum.ExecType_ORDERSTATUS, func(r *erFields) { r.solicited, r.text = true, "Unknown order" })
 		return nil
 	}
-	e.reportLocked(o, enum.ExecType_ORDERSTATUS, nil)
+	e.reportLocked(o, enum.ExecType_ORDERSTATUS, solicited)
 	return nil
 }
 
@@ -468,8 +492,13 @@ func (e *Engine) cancelRejectLocked(id quickfix.SessionID, o *Order, orig, clOrd
 	e.outboxLocked(id).push(cancelReject(orderID, clOrdID, orig, status, to, reason, text, e.sched.Now()))
 }
 
+// solicited marks a report that answers a client request (F, G, H, K, q):
+// it is sent even when list orders report through ListStatus only.
+func solicited(r *erFields) { r.solicited = true }
+
 // reportLocked sends an ExecutionReport to the order's session and a drop
-// copy to the monitor session (section 8.1).
+// copy to the monitor session (section 8.1). For list orders it also feeds
+// the list's ListStatus reporting (section 7.6).
 func (e *Engine) reportLocked(o *Order, et enum.ExecType, extra func(*erFields)) {
 	f := erFields{execType: string(et), now: e.sched.Now()}
 	if extra != nil {
@@ -479,14 +508,28 @@ func (e *Engine) reportLocked(o *Order, et enum.ExecType, extra func(*erFields))
 		e.execSeq++
 		f.execID = fmt.Sprintf("EXE-%d", e.execSeq)
 	}
-	msg := executionReport(o, f)
-	if dc := e.dropCopy.Load(); dc != nil && o.Session != *dc {
+	var l *List
+	if o.ListID != "" {
+		l = e.book.list(o.Session, o.ListID)
+	}
+	if l == nil || f.solicited || l.lists.Report != "list_status" {
+		e.deliverLocked(o.Session, executionReport(o, f), true)
+	}
+	if l != nil {
+		e.listChangedLocked(l)
+	}
+}
+
+// deliverLocked queues a message for a session and, if copy is set and
+// drop copy is on, a copy for the monitor session tagged with 5001.
+func (e *Engine) deliverLocked(id quickfix.SessionID, msg *quickfix.Message, copy bool) {
+	if dc := e.dropCopy.Load(); copy && dc != nil && id != *dc {
 		cp := quickfix.NewMessage()
 		msg.CopyInto(cp)
-		cp.Body.SetField(tag.MirrorSessionID, quickfix.FIXString(o.Session.String()))
+		cp.Body.SetField(tag.MirrorSessionID, quickfix.FIXString(id.String()))
 		e.outboxLocked(*dc).push(cp)
 	}
-	e.outboxLocked(o.Session).push(msg)
+	e.outboxLocked(id).push(msg)
 }
 
 func (e *Engine) outboxLocked(id quickfix.SessionID) *outbox {

@@ -2,7 +2,7 @@
 
 A simulated FIX 4.4 server written in Go. It streams prices for configured symbols, accepts orders and answers with ExecutionReports according to predefined rules. See [the design document](./docs/Design%20Document.md) for the full specification.
 
-Status: phase 3 (orders), the MVP gate: mockfix runs entirely from YAML. Clients get market data (V/W/X/Y) and orders (D/F/G/H) answered by the rule engine, with drop copies to the monitor session. Order lists (E/K/M/q), the REST API and the Web UI come in later phases.
+Status: phase 3 (orders), the MVP gate: mockfix runs entirely from YAML. Clients get market data (V/W/X/Y), single orders (D/F/G/H), order lists (E/K/M) and mass cancel (q), answered by the rule engine, with drop copies to the monitor session. The REST API and the Web UI come in later phases.
 
 ## Requirements
 
@@ -17,7 +17,7 @@ Status: phase 3 (orders), the MVP gate: mockfix runs entirely from YAML. Clients
 | `internal/config/` | Config model, YAML loading, validation, hot reload, versioning |
 | `internal/fixserver/` | Client and monitor acceptors, MsgType router |
 | `internal/marketdata/` | Price models, scheduler, V/W/X/Y subscriptions, conflating and batching publisher |
-| `internal/order/` | Order state, rule engine, action chains, slippage, D/F/G/H handlers, drop copy |
+| `internal/order/` | Order state, rule engine, action chains, slippage, D/F/G/H, order lists E/K/M, mass cancel q, drop copy |
 | `internal/sched/` | Single-goroutine scheduler for delayed actions |
 | `internal/app/` | Wiring and startup/shutdown order; end-to-end tests |
 | `internal/clock/` | Real and fake clocks for time-based tests |
@@ -80,11 +80,22 @@ A new order is matched once against `order_rules` in ascending `priority`; the f
 | `qty`, `price` | number, or `{ gt, gte, lt, lte, eq }` |
 | `tags` | `{ "9001": VIP }`, each value in any string form |
 | `probability` | `0.2`: a stable 20% of orders, decided by hashing the rule name, CompID and ClOrdID |
+| `in_list` | `true` for orders that arrived in a NewOrderList |
+| `list_id` | value, list, `{ regex: "..." }` |
+| `list_seq_no` | number, or `{ gt, gte, lt, lte, eq }` (list orders only) |
 
 Actions run at their cumulative `delay_ms`: `ack`, `fill` (remaining quantity), `partial_fill` (`ratio` or `qty`, optional `count` fills `delay_ms` apart), `reject` (`reason`, `text`), `cancel`, `expire`, `ignore`, `business_reject`. Fills use `price_mode: market` (ask for buys, bid for sells, plus the symbol's slippage, always against the client) or `price_mode: fixed` with `price`. Slippage types: `fixed` (`ticks`), `percent` (`value`), `random` (`min_ticks`..`max_ticks`, seeded from the symbol `seed`).
 
 Rules with `message_type: F` or `G` take exactly one action: `ack` (accept, optionally after `delay_ms`), `reject` (OrderCancelReject with `reason`) or `ignore`. Without a matching rule a cancel or replace is accepted at once. A cancel drops the order's pending actions; a replace may change only `OrderQty`, and the remaining actions continue with the new quantity. Orders in flight keep their action chain when the rules are reloaded.
 
 With `server.monitor.drop_copy: true`, every ExecutionReport is copied to the monitor session with tag 5001 naming the source session.
+
+### Order lists and mass cancel
+
+A NewOrderList (E) is checked as a whole first: TotNoOrders must match the entries, ClOrdIDs must be unique in the list and the session, the ListID must be new in the session, and the list may hold at most `order_lists.max_orders_per_list` orders. A failing list gets ListStatus (N) with `ListOrderStatus=7` and `ListStatusText`, and no order is created. Then `list_rules` run (match `tot_no_orders`, `list_id`, `comp_id`; action `reject_list` with `text`, or `delay_ack` with `delay_ms`), the N Ack is sent (`ack: list_status`), and each order goes through `order_rules` like a D.
+
+`report` chooses how list orders report: `per_order_er` (ExecutionReports carrying ListID), `list_status` (an aggregated N every `list_status_interval_ms`, only when something changed) or `both`. With `final_list_status` (default true) an N with `ListStatusType=5` follows once every order is closed. Responses to a client's own F, G, H, K or q are always ExecutionReports. ListCancelRequest (K) cancels the list's open orders and answers with N; ListStatusRequest (M) returns the current N. `order_lists.enabled: false` answers E, K and M with BusinessMessageReject.
+
+OrderMassCancelRequest (q) supports `MassCancelRequestType` 1 (by symbol) and 7 (all orders of the session); it answers with OrderMassCancelReport (r) listing the affected orders, then an ExecutionReport per canceled order. Other types are rejected in r.
 
 `internal/order/testdata/order_flow.golden` holds the exact message sequence of a scripted order flow on a fake clock; after an intended change run `go test ./internal/order -run Golden -update` and review the diff.

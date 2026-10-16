@@ -162,6 +162,24 @@ func TestRuleValidationErrors(t *testing.T) {
 		{"regex on side", `order_rules:
   - { name: r, priority: 1, match: { side: { regex: "B.*" } }, actions: [ { type: ack } ] }
 `, "order_rules[0].match.side", 8},
+		{"unknown list match field", `list_rules:
+  - { name: l, priority: 1, match: { symbol: AAPL }, action: { type: reject_list } }
+`, "list_rules[0].match.symbol", 8},
+		{"unknown list action param", `list_rules:
+  - { name: l, priority: 1, action: { type: delay_ack, text: x } }
+`, "list_rules[0].action.text", 8},
+		{"unknown list action", `list_rules:
+  - { name: l, priority: 1, action: { type: explode } }
+`, "list_rules[0].action.type", 8},
+		{"duplicate list rule", `list_rules:
+  - { name: l, priority: 1, action: { type: reject_list } }
+  - { name: l, priority: 2, action: { type: reject_list } }
+`, "list_rules[1].name", 9},
+		{"bad report mode", `order_lists: { report: sometimes }
+`, "order_lists.report", 7},
+		{"in_list not bool", `order_rules:
+  - { name: r, priority: 1, match: { in_list: yes please }, actions: [ { type: ack } ] }
+`, "order_rules[0].match.in_list", 8},
 		{"bad operator", `order_rules:
   - { name: r, priority: 1, match: { qty: { above: 5 } }, actions: [ { type: ack } ] }
 `, "order_rules[0].match.qty", 8},

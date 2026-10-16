@@ -24,7 +24,9 @@ import (
 	"github.com/quynv/mock-fixser/fix/fix44/marketdatarequest"
 	"github.com/quynv/mock-fixser/fix/fix44/marketdatarequestreject"
 	"github.com/quynv/mock-fixser/fix/fix44/marketdatasnapshotfullrefresh"
+	"github.com/quynv/mock-fixser/fix/fix44/neworderlist"
 	"github.com/quynv/mock-fixser/fix/fix44/newordersingle"
+	"github.com/quynv/mock-fixser/fix/fix44/ordermasscancelrequest"
 )
 
 func repoPath(rel string) string {
@@ -309,5 +311,60 @@ func TestOrdersOverFIXWithDropCopy(t *testing.T) {
 		if src, _ := cp.Body.GetString(5001); src != "FIX.4.4:MOCKSRV->CLIENT1" {
 			t.Fatalf("drop copy 5001 = %q", src)
 		}
+	}
+}
+
+func TestOrderListAndMassCancelOverFIX(t *testing.T) {
+	port := freePort(t)
+	path := filepath.Join(t.TempDir(), "mock.yaml")
+	writeConfig(t, path, port, symbolsYAML+`order_rules:
+  - { name: first-fills, priority: 1, match: { list_seq_no: 1 }, actions: [ { type: ack }, { type: fill } ] }
+default_action: [ { type: ack } ]
+`)
+	startApp(t, path)
+	c := dial(t, port)
+
+	nol := neworderlist.New(field.NewListID("L1"), field.NewBidType(enum.BidType_NOBID), field.NewTotNoOrders(2))
+	g := neworderlist.NewNoOrdersRepeatingGroup()
+	for i, sym := range []string{"AAPL", "EURUSD"} {
+		o := g.Add()
+		o.SetClOrdID(fmt.Sprint("L1-", i+1))
+		o.SetListSeqNo(i + 1)
+		o.SetSymbol(sym)
+		o.SetSide(enum.Side_BUY)
+		o.SetOrderQty(decimal.NewFromInt(100), 0)
+		o.SetOrdType(enum.OrdType_MARKET)
+	}
+	nol.SetNoOrders(g)
+	if err := quickfix.SendToTarget(nol, c.id); err != nil {
+		t.Fatal(err)
+	}
+	ack := c.waitFor(t, "N", "")
+	if typ, _ := ack.Body.GetString(429); typ != "1" {
+		t.Fatalf("ListStatusType = %s, want 1", typ)
+	}
+	for range 3 { // L1-1 ack + fill, L1-2 ack
+		er := executionreport.FromMessage(c.waitFor(t, "8", ""))
+		if id, _ := er.GetListID(); id != "L1" {
+			t.Fatalf("ER without ListID: %s", er.Message)
+		}
+	}
+
+	q := ordermasscancelrequest.New(field.NewClOrdID("MC1"),
+		field.NewMassCancelRequestType(enum.MassCancelRequestType_CXLALLORDERS), field.NewTransactTime(time.Now()))
+	if err := quickfix.SendToTarget(q, c.id); err != nil {
+		t.Fatal(err)
+	}
+	r := c.waitFor(t, "r", "")
+	if n, _ := r.Body.GetString(533); n != "1" {
+		t.Fatalf("TotalAffectedOrders = %s, want 1", n)
+	}
+	er := executionreport.FromMessage(c.waitFor(t, "8", ""))
+	if id, _ := er.GetClOrdID(); id != "L1-2" {
+		t.Fatalf("canceled %s, want L1-2", id)
+	}
+	done := c.waitFor(t, "N", "")
+	if typ, _ := done.Body.GetString(429); typ != "5" {
+		t.Fatalf("final ListStatusType = %s, want 5", typ)
 	}
 }

@@ -24,6 +24,7 @@ type erFields struct {
 	lastQty      *decimal.Decimal
 	lastPx       *decimal.Decimal
 	now          time.Time
+	solicited    bool
 }
 
 // scale is the number of decimals needed to print d without loss.
@@ -62,6 +63,9 @@ func executionReport(o *Order, f erFields) *quickfix.Message {
 	}
 	if o.Account != "" {
 		m.SetAccount(o.Account)
+	}
+	if o.ListID != "" {
+		m.SetListID(o.ListID)
 	}
 	if f.lastQty != nil {
 		m.SetLastQty(dec(*f.lastQty))

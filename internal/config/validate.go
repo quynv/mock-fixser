@@ -70,6 +70,16 @@ func validate(c *Config) []FieldError {
 		}
 	}
 
+	listRuleNames := map[string]int{}
+	for i, r := range c.ListRules {
+		p := fmt.Sprintf("list_rules[%d].name", i)
+		if j, dup := listRuleNames[r.Name]; dup {
+			add(p, "duplicate list rule name %q (also list_rules[%d])", r.Name, j)
+		} else {
+			listRuleNames[r.Name] = i
+		}
+	}
+
 	sessions := map[SessionKey]int{}
 	for i, s := range c.Server.FIX.Sessions {
 		p := fmt.Sprintf("server.fix.sessions[%d]", i)

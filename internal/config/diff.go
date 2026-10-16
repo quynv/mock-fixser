@@ -49,6 +49,8 @@ func Compare(old, new *Config) Diff {
 	check("symbols", old.Symbols, new.Symbols, false)
 	check("order_rules", old.OrderRules, new.OrderRules, false)
 	check("default_action", old.DefaultAction, new.DefaultAction, false)
+	check("order_lists", old.OrderLists, new.OrderLists, false)
+	check("list_rules", old.ListRules, new.ListRules, false)
 
 	oldKeys := map[SessionKey]bool{}
 	for _, s := range of.Sessions {

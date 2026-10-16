@@ -293,6 +293,16 @@ func applyDefaults(c *Config) {
 		b.MaxEntriesPerMsg = 200
 	}
 
+	ol := &c.OrderLists
+	if ol.MaxOrdersPerList == 0 {
+		ol.MaxOrdersPerList = 100
+	}
+	setDefault(&ol.Ack, "list_status")
+	setDefault(&ol.Report, "per_order_er")
+	if ol.ListStatusIntervalMs == 0 && ol.Report != "per_order_er" {
+		ol.ListStatusIntervalMs = 500
+	}
+
 	for i := range c.Symbols {
 		s := &c.Symbols[i]
 		setDefault(&s.Model, "random_walk")

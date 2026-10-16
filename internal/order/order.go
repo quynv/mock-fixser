@@ -40,6 +40,10 @@ type Order struct {
 	Rule        string
 	Fills       []Fill
 	CreatedAt   time.Time
+	ListID      string // set for orders of a NewOrderList
+	ListSeqNo   int
+
+	seq uint64 // creation order
 
 	// chain is bumped when an order's pending actions are cancelled; steps
 	// scheduled under an older value do nothing.
@@ -81,9 +85,10 @@ type clKey struct {
 }
 
 // book indexes orders by OrderID and by every ClOrdID they have used in
-// their session.
+// their session, and lists by ListID.
 type book struct {
 	retention int
+	lists     map[clKey]*List
 	orders    map[string]*Order
 	byClOrdID map[clKey]*Order
 	clOrdIDs  map[string][]string // OrderID -> ClOrdIDs, for eviction
@@ -93,6 +98,7 @@ type book struct {
 func newBook(retention int) *book {
 	return &book{
 		retention: retention,
+		lists:     map[clKey]*List{},
 		orders:    map[string]*Order{},
 		byClOrdID: map[clKey]*Order{},
 		clOrdIDs:  map[string][]string{},
@@ -107,6 +113,10 @@ func (b *book) add(o *Order) {
 func (b *book) index(o *Order, clOrdID string) {
 	b.byClOrdID[clKey{o.Session, clOrdID}] = o
 	b.clOrdIDs[o.OrderID] = append(b.clOrdIDs[o.OrderID], clOrdID)
+}
+
+func (b *book) list(s quickfix.SessionID, listID string) *List {
+	return b.lists[clKey{s, listID}]
 }
 
 func (b *book) byClOrd(s quickfix.SessionID, clOrdID string) *Order {

@@ -897,6 +897,7 @@
     <field name='EncodedTextLen' required='N' />
     <field name='EncodedText' required='N' />
    </group>
+   <field name='MirrorSessionID' required='N' />
   </message>
   <message name='AllocationInstructionAck' msgcat='app' msgtype='P'>
    <field name='AllocID' required='Y' />
