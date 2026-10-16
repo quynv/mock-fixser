@@ -1,0 +1,18 @@
+# Build output
+/bin/
+/dist/
+
+# Runtime data
+/data/wal/
+/configs/history/
+*.log
+
+# Web
+/web/node_modules/
+/web/dist/
+
+# Local tooling
+.claude/settings.local.json
+.DS_Store
+.idea/
+.vscode/
