@@ -100,6 +100,14 @@ func (s *Server) Stop() {
 	}
 }
 
+// OnLogout registers fn to run when any session logs out or disconnects.
+// Register hooks before Start.
+func (s *Server) OnLogout(fn func(quickfix.SessionID)) {
+	s.app.mu.Lock()
+	defer s.app.mu.Unlock()
+	s.app.onLogout = append(s.app.onLogout, fn)
+}
+
 // LoggedOn reports whether a session is currently logged on.
 func (s *Server) LoggedOn(id quickfix.SessionID) bool { return s.app.loggedOn(id) }
 
